@@ -16,6 +16,8 @@ import {
   Settings,
   Inbox,
   FileText,
+  Shield,
+  ScrollText,
 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -30,14 +32,17 @@ import { DashboardView } from '@/components/dashboard/dashboard-view';
 import { MandaratView } from '@/components/mandarat/mandarat-view';
 import { SettingsView } from '@/components/settings/settings-view';
 import { DraftInbox } from '@/components/chat/draft-inbox';
+import { AdminView } from '@/components/admin/admin-view';
+import { ActivityLogView } from '@/components/log/activity-log-view';
 import { usePrefStore } from '@/lib/store';
 
-const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'drafts' | 'settings' }[] = [
+const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'drafts' | 'settings' | 'admin' | 'log' }[] = [
   { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
   { view: 'calendar', icon: CalendarDays, labelKey: 'calendar' },
   { view: 'todo', icon: CheckSquare, labelKey: 'todo' },
   { view: 'mandarat', icon: LayoutGrid, labelKey: 'mandarat' },
   { view: 'drafts', icon: FileText, labelKey: 'drafts' },
+  { view: 'log', icon: ScrollText, labelKey: 'log' },
 ];
 
 function ViewSwitcher({ view }: { view: AppView }) {
@@ -52,6 +57,10 @@ function ViewSwitcher({ view }: { view: AppView }) {
       return <MandaratView />;
     case 'drafts':
       return <DraftInbox />;
+    case 'admin':
+      return <AdminView />;
+    case 'log':
+      return <ActivityLogView />;
     case 'settings':
       return <SettingsView />;
     default:
@@ -76,6 +85,8 @@ export function PcDashboard() {
     mandarat: t.nav.mandarat,
     drafts: t.nav.drafts,
     settings: t.nav.settings,
+    admin: t.admin.title,
+    log: t.log.title,
   };
 
   const headerAction =
@@ -129,6 +140,30 @@ export function PcDashboard() {
 
         {/* Bottom section: Settings, Theme, Language, User */}
         <div className="space-y-1 border-t p-2">
+          <button
+            onClick={() => setView('log')}
+            className={cn(
+              'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              activeView === 'log'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <ScrollText className="size-4" />
+            {t.log.title}
+          </button>
+          <button
+            onClick={() => setView('admin')}
+            className={cn(
+              'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              activeView === 'admin'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <Shield className="size-4" />
+            {t.admin.title}
+          </button>
           <button
             onClick={() => setView('settings')}
             className={cn(

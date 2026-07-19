@@ -1,0 +1,1093 @@
+     1→'use client';
+     2→
+     3→import { useState, useRef, useEffect, useCallback } from 'react';
+     4→import { cn } from '@/lib/utils';
+     5→import { useNodeStore, useProjectStore, usePrefStore } from '@/lib/store';
+     6→import { useLocale } from '@/hooks/use-locale';
+     7→import {
+     8→  parseUserInput,
+     9→  createDraftNode,
+    10→  applyClarification,
+    11→  matchProject,
+    12→} from '@/lib/ai-parser';
+    13→import {
+    14→  MessageCircle,
+    15→  X,
+    16→  Send,
+    17→  Paperclip,
+    18→  CalendarDays,
+    19→  ListChecks,
+    20→  Target,
+    21→  MapPin,
+    22→  Users,
+    23→  Clock,
+    24→  AlertCircle,
+    25→  Loader2,
+    26→  XCircle,
+    27→  Mic,
+    28→  Pencil,
+    29→  FolderOpen,
+    30→  Check,
+    31→} from 'lucide-react';
+    32→import { Button } from '@/components/ui/button';
+    33→import { Badge } from '@/components/ui/badge';
+    34→import { ScrollArea } from '@/components/ui/scroll-area';
+    35→import { Input } from '@/components/ui/input';
+    36→import { Textarea } from '@/components/ui/textarea';
+    37→import { motion, AnimatePresence } from 'framer-motion';
+    38→import { toast } from 'sonner';
+    39→import type { Node } from '@/lib/types';
+    40→
+    41→/* ------------------------------------------------------------------ */
+    42→/*  Types                                                              */
+    43→/* ------------------------------------------------------------------ */
+    44→
+    45→interface ProjectMatchData {
+    46→  projectId: string;
+    47→  projectName: string;
+    48→  confidence: number;
+    49→  nodeId: string;
+    50→}
+    51→
+    52→interface ChatMessage {
+    53→  id: string;
+    54→  role: 'user' | 'ai' | 'draft' | 'project_match';
+    55→  content: string;
+    56→  /** Reference to node stored in Zustand — keeps UI in sync after edits / clarification */
+    57→  draftNodeId?: string;
+    58→  isThinking?: boolean;
+    59→  projectMatchData?: ProjectMatchData;
+    60→}
+    61→
+    62→interface ClarificationAwaiting {
+    63→  fieldName: string;
+    64→  nodeId: string;
+    65→  remainingFields: string[];
+    66→}
+    67→
+    68→interface ClarificationState {
+    69→  awaiting: ClarificationAwaiting | null;
+    70→}
+    71→
+    72→interface EditValues {
+    73→  title: string;
+    74→  location: string;
+    75→  attendees: string;
+    76→  duration: string;
+    77→  description: string;
+    78→}
+    79→
+    80→/* ------------------------------------------------------------------ */
+    81→/*  Component                                                          */
+    82→/* ------------------------------------------------------------------ */
+    83→
+    84→export function ChatPanel() {
+    85→  const { t, locale } = useLocale();
+    86→
+    87→  /* ---- local state ---- */
+    88→  const [open, setOpen] = useState(false);
+    89→  const [messages, setMessages] = useState<ChatMessage[]>([]);
+    90→  const [input, setInput] = useState('');
+    91→  const [isProcessing, setIsProcessing] = useState(false);
+    92→  const [attachedFile, setAttachedFile] = useState<string | null>(null);
+    93→  const [clarificationState, setClarificationState] = useState<ClarificationState>({
+    94→    awaiting: null,
+    95→  });
+    96→  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+    97→  const [editValues, setEditValues] = useState<EditValues>({
+    98→    title: '',
+    99→    location: '',
+   100→    attendees: '',
+   101→    duration: '',
+   102→    description: '',
+   103→  });
+   104→  const [isDark, setIsDark] = useState(false);
+   105→  const welcomeShownRef = useRef(false);
+   106→  const messagesEndRef = useRef<HTMLDivElement>(null);
+   107→  const inputRef = useRef<HTMLInputElement>(null);
+   108→  const fileInputRef = useRef<HTMLInputElement>(null);
+   109→
+   110→  /* ---- stores ---- */
+   111→  const addNode = useNodeStore((s) => s.addNode);
+   112→  const updateNode = useNodeStore((s) => s.updateNode);
+   113→  const removeNode = useNodeStore((s) => s.removeNode);
+   114→  const nodes = useNodeStore((s) => s.nodes);
+   115→  const projects = useProjectStore((s) => s.projects);
+   116→  const language = usePrefStore((s) => s.language);
+   117→
+   118→  /* ---- derived ---- */
+   119→  const draftCount = Object.values(nodes).filter(
+   120→    (n) => n.aiMeta?.status === 'draft',
+   121→  ).length;
+   122→
+   123→  /* ---- dark-mode observer ---- */
+   124→  useEffect(() => {
+   125→    setIsDark(document.documentElement.classList.contains('dark'));
+   126→    const observer = new MutationObserver(() => {
+   127→      setIsDark(document.documentElement.classList.contains('dark'));
+   128→    });
+   129→    observer.observe(document.documentElement, {
+   130→      attributes: true,
+   131→      attributeFilter: ['class'],
+   132→    });
+   133→    return () => observer.disconnect();
+   134→  }, []);
+   135→
+   136→  /* ---- auto-scroll ---- */
+   137→  useEffect(() => {
+   138→    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+   139→  }, [messages]);
+   140→
+   141→  /* ---- focus input when opened ---- */
+   142→  useEffect(() => {
+   143→    if (open) setTimeout(() => inputRef.current?.focus(), 100);
+   144→  }, [open]);
+   145→
+   146→  /* ---- welcome message (once via ref) ---- */
+   147→  useEffect(() => {
+   148→    if (open && !welcomeShownRef.current) {
+   149→      welcomeShownRef.current = true;
+   150→      setMessages((prev) => [
+   151→        ...prev,
+   152→        {
+   153→          id: 'welcome-' + Date.now(),
+   154→          role: 'ai' as const,
+   155→          content: t.chat.welcomeMessage,
+   156→        },
+   157→      ]);
+   158→    }
+   159→  }, [open, t.chat.welcomeMessage]);
+   160→
+   161→  /* ================================================================ */
+   162→  /*  Helpers                                                          */
+   163→  /* ================================================================ */
+   164→
+   165→  /** Map missing-field name → i18n question string */
+   166→  const getFieldLabel = useCallback(
+   167→    (fieldName: string): string => {
+   168→      const map: Record<string, string> = {
+   169→        date: t.chat.askDate,
+   170→        time: t.chat.askTime,
+   171→        location: t.chat.askLocation,
+   172→        target: t.chat.askTarget,
+   173→        duration: t.chat.askDuration,
+   174→        content: t.chat.askContent,
+   175→      };
+   176→      return map[fieldName] ?? fieldName;
+   177→    },
+   178→    [t],
+   179→  );
+   180→
+   181→  const typeLabel = (type: string) => {
+   182→    if (type === 'calendar_event') return t.chat.typeEvent;
+   183→    if (type === 'todo') return t.chat.typeTodo;
+   184→    return t.chat.typeGoal;
+   185→  };
+   186→
+   187→  const typeIcon = (type: string) => {
+   188→    if (type === 'calendar_event') return CalendarDays;
+   189→    if (type === 'todo') return ListChecks;
+   190→    return Target;
+   191→  };
+   192→
+   193→  /** Locale-aware schedule formatting */
+   194→  const formatSchedule = (node: Node): string | null => {
+   195→    if (!node.schedule) return null;
+   196→    const s = node.schedule;
+   197→    const parts: string[] = [];
+   198→
+   199→    if (s.allDay) {
+   200→      parts.push(
+   201→        locale === 'ko'
+   202→          ? `${s.startAt.getMonth() + 1}/${s.startAt.getDate()} (${['일', '월', '화', '수', '목', '금', '토'][s.startAt.getDay()]})`
+   203→          : s.startAt.toLocaleDateString(locale, {
+   204→              month: 'short',
+   205→              weekday: 'short',
+   206→            }),
+   207→      );
+   208→    } else {
+   209→      const fmt = (d: Date) =>
+   210→        locale === 'ko'
+   211→          ? `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+   212→          : d.toLocaleTimeString(locale, {
+   213→              hour: '2-digit',
+   214→              minute: '2-digit',
+   215→            });
+   216→      parts.push(fmt(s.startAt) + '~' + fmt(s.endAt));
+   217→    }
+   218→
+   219→    if (s.location) parts.push('\u{1F4CD} ' + s.location);
+   220→    if (s.attendees.length > 0)
+   221→      parts.push('\u{1F465} ' + s.attendees.join(', '));
+   222→    return parts.join(' \u00B7 ');
+   223→  };
+   224→
+   225→  /* ================================================================ */
+   226→  /*  Project matching                                                 */
+   227→  /* ================================================================ */
+   228→
+   229→  const runProjectMatch = useCallback(
+   230→    (node: Node) => {
+   231→      const match = matchProject(
+   232→        node.title,
+   233→        node.description,
+   234→        projects.map((p) => p.title),
+   235→      );
+   236→      if (match && match.confidence > 20) {
+   237→        const project = projects.find((p) => p.title === match.projectId);
+   238→        if (project) {
+   239→          setMessages((prev) => [
+   240→            ...prev,
+   241→            {
+   242→              id: 'pmatch-' + Date.now(),
+   243→              role: 'project_match' as const,
+   244→              content: t.chat.projectMatched,
+   245→              projectMatchData: {
+   246→                projectId: project.id,
+   247→                projectName: project.title,
+   248→                confidence: match.confidence,
+   249→                nodeId: node.id,
+   250→              },
+   251→            },
+   252→          ]);
+   253→        }
+   254→      }
+   255→    },
+   256→    [projects, t],
+   257→  );
+   258→
+   259→  /* ================================================================ */
+   260→  /*  Draft editing                                                    */
+   261→  /* ================================================================ */
+   262→
+   263→  const handleStartEdit = useCallback((node: Node) => {
+   264→    setEditingNodeId(node.id);
+   265→    setEditValues({
+   266→      title: node.title,
+   267→      location: node.schedule?.location ?? '',
+   268→      attendees: node.schedule?.attendees?.join(', ') ?? '',
+   269→      duration: String(node.estimatedDuration),
+   270→      description: node.description,
+   271→    });
+   272→  }, []);
+   273→
+   274→  const handleSaveEdit = useCallback(
+   275→    (nodeId: string) => {
+   276→      const current = nodes[nodeId];
+   277→      if (!current) return;
+   278→
+   279→      const updates: Partial<Node> = { title: editValues.title };
+   280→
+   281→      if (current.schedule) {
+   282→        const schedule = { ...current.schedule };
+   283→        schedule.location = editValues.location || null;
+   284→        schedule.attendees = editValues.attendees
+   285→          .split(',')
+   286→          .map((s) => s.trim())
+   287→          .filter(Boolean);
+   288→        updates.schedule = schedule;
+   289→      }
+   290→
+   291→      updates.description = editValues.description;
+   292→
+   293→      const dur = parseInt(editValues.duration, 10);
+   294→      if (!isNaN(dur) && dur > 0) {
+   295→        updates.estimatedDuration = dur;
+   296→      }
+   297→
+   298→      updateNode(nodeId, updates);
+   299→      setEditingNodeId(null);
+   300→      toast.success(t.chat.draftSaved);
+   301→    },
+   302→    [editValues, nodes, updateNode, t],
+   303→  );
+   304→
+   305→  /* ================================================================ */
+   306→  /*  Confirm / Cancel draft                                           */
+   307→  /* ================================================================ */
+   308→
+   309→  const handleConfirmDraft = useCallback(
+   310→    (node: Node) => {
+   311→      if (!node.aiMeta) return;
+   312→      updateNode(node.id, {
+   313→        aiMeta: { ...node.aiMeta, status: 'confirmed' },
+   314→      });
+   315→      toast.success(t.chat.draftSaved);
+   316→      setMessages((prev) => {
+   317→        const filtered = prev.filter((m) => m.draftNodeId !== node.id);
+   318→        return [
+   319→          ...filtered,
+   320→          {
+   321→            id: Date.now().toString() + 'c',
+   322→            role: 'ai' as const,
+   323→            content: '\u2705 ' + node.title + ' \u2014 ' + t.chat.draftSaved,
+   324→          },
+   325→        ];
+   326→      });
+   327→      // clear clarification if it was for this node
+   328→      if (clarificationState.awaiting?.nodeId === node.id) {
+   329→        setClarificationState({ awaiting: null });
+   330→      }
+   331→    },
+   332→    [updateNode, t, clarificationState.awaiting],
+   333→  );
+   334→
+   335→  const handleCancelDraft = useCallback(
+   336→    (nodeId: string) => {
+   337→      removeNode(nodeId);
+   338→      setMessages((prev) => prev.filter((m) => m.draftNodeId !== nodeId));
+   339→      if (clarificationState.awaiting?.nodeId === nodeId) {
+   340→        setClarificationState({ awaiting: null });
+   341→      }
+   342→    },
+   343→    [removeNode, clarificationState.awaiting],
+   344→  );
+   345→
+   346→  /* ================================================================ */
+   347→  /*  Project suggestion actions                                       */
+   348→  /* ================================================================ */
+   349→
+   350→  const handleAddToProject = useCallback(
+   351→    (projectId: string, nodeId: string) => {
+   352→      const node = nodes[nodeId];
+   353→      if (!node) return;
+   354→      updateNode(nodeId, {
+   355→        projectId,
+   356→        aiMeta: node.aiMeta
+   357→          ? { ...node.aiMeta, suggestedProjectId: projectId }
+   358→          : null,
+   359→      });
+   360→      setMessages((prev) =>
+   361→        prev.filter(
+   362→          (m) =>
+   363→            !(
+   364→              m.role === 'project_match' &&
+   365→              m.projectMatchData?.nodeId === nodeId
+   366→            ),
+   367→        ),
+   368→      );
+   369→      toast.success(t.chat.draftSaved);
+   370→    },
+   371→    [nodes, updateNode, t],
+   372→  );
+   373→
+   374→  const handleKeepUnsorted = useCallback((nodeId: string) => {
+   375→    setMessages((prev) =>
+   376→      prev.filter(
+   377→        (m) =>
+   378→          !(
+   379→            m.role === 'project_match' &&
+   380→            m.projectMatchData?.nodeId === nodeId
+   381→          ),
+   382→      ),
+   383→    );
+   384→  }, []);
+   385→
+   386→  /* ================================================================ */
+   387→  /*  File handling                                                    */
+   388→  /* ================================================================ */
+   389→
+   390→  const handleFileSelect = useCallback(
+   391→    (e: React.ChangeEvent<HTMLInputElement>) => {
+   392→      const file = e.target.files?.[0];
+   393→      if (!file) return;
+   394→      const reader = new FileReader();
+   395→      reader.onload = (ev) => {
+   396→        setAttachedFile(ev.target?.result as string);
+   397→      };
+   398→      reader.readAsText(file);
+   399→      e.target.value = '';
+   400→    },
+   401→    [],
+   402→  );
+   403→
+   404→  /* ================================================================ */
+   405→  /*  Voice button (Phase 4 placeholder)                               */
+   406→  /* ================================================================ */
+   407→
+   408→  const handleVoiceClick = useCallback(() => {
+   409→    toast.info('Phase 4\u00EC\x97\x90\xEC\x84\x9C \uAD6C\xED\x98\x84\xEB\x90\xA9\xEB\x8B\x88\xEB\x8B\xA4');
+   410→  }, []);
+   411→
+   412→  /* ================================================================ */
+   413→  /*  Send / Clarification flow                                        */
+   414→  /* ================================================================ */
+   415→
+   416→  const handleSend = useCallback(async () => {
+   417→    const text = input.trim();
+   418→    if (!text && !attachedFile) return;
+   419→
+   420→    /* -------------------------------------------------------------- */
+   421→    /*  CLARIFICATION ANSWER                                           */
+   422→    /* -------------------------------------------------------------- */
+   423→    if (clarificationState.awaiting) {
+   424→      const { fieldName, nodeId, remainingFields } =
+   425→        clarificationState.awaiting;
+   426→      const node = nodes[nodeId];
+   427→      if (!node) return;
+   428→
+   429→      setMessages((prev) => [
+   430→        ...prev,
+   431→        { id: Date.now().toString(), role: 'user' as const, content: text },
+   432→      ]);
+   433→      setInput('');
+   434→      setIsProcessing(true);
+   435→
+   436→      // small delay for natural feel
+   437→      await new Promise((r) => setTimeout(r, 300));
+   438→
+   439→      // apply the answer to the draft node
+   440→      const updatedNode = applyClarification(node, fieldName, text, locale);
+   441→      updateNode(nodeId, updatedNode);
+   442→
+   443→      // advance to next missing field or finish
+   444→      const newRemaining = remainingFields.slice(1);
+   445→
+   446→      if (newRemaining.length > 0) {
+   447→        setClarificationState({
+   448→          awaiting: {
+   449→            fieldName: newRemaining[0],
+   450→            nodeId,
+   451→            remainingFields: newRemaining,
+   452→          },
+   453→        });
+   454→        setMessages((prev) => [
+   455→          ...prev,
+   456→          {
+   457→            id: Date.now().toString() + 'q',
+   458→            role: 'ai' as const,
+   459→            content: getFieldLabel(newRemaining[0]),
+   460→          },
+   461→        ]);
+   462→      } else {
+   463→        // all clarifications resolved → show confirm card + project match
+   464→        setClarificationState({ awaiting: null });
+   465→        setMessages((prev) => [
+   466→          ...prev,
+   467→          {
+   468→            id: Date.now().toString() + 'done',
+   469→            role: 'ai' as const,
+   470→            content: t.chat.parsedSummary,
+   471→          },
+   472→        ]);
+   473→        runProjectMatch(updatedNode);
+   474→      }
+   475→
+   476→      setIsProcessing(false);
+   477→      return;
+   478→    }
+   479→
+   480→    /* -------------------------------------------------------------- */
+   481→    /*  NORMAL FLOW                                                    */
+   482→    /* -------------------------------------------------------------- */
+   483→    const userMsg: ChatMessage = {
+   484→      id: Date.now().toString(),
+   485→      role: 'user',
+   486→      content: text || '\u{1F4CE} ' + t.chat.fileAttached,
+   487→    };
+   488→    setMessages((prev) => [...prev, userMsg]);
+   489→    setInput('');
+   490→    setIsProcessing(true);
+   491→
+   492→    /* ---- file attachment ---- */
+   493→    if (attachedFile) {
+   494→      try {
+   495→        const { parseFileContent } = await import('@/lib/ai-parser');
+   496→        const results = parseFileContent(attachedFile);
+   497→        if (results.length === 0) {
+   498→          setMessages((prev) => [
+   499→            ...prev,
+   500→            {
+   501→              id: Date.now().toString() + 'e',
+   502→              role: 'ai' as const,
+   503→              content: t.chat.fileParseError,
+   504→            },
+   505→          ]);
+   506→        } else {
+   507→          for (const r of results) {
+   508→            const draft = createDraftNode(r, 'demo-workspace');
+   509→            addNode(draft);
+   510→            setMessages((prev) => [
+   511→              ...prev,
+   512→              {
+   513→                id: Date.now().toString() + 'd' + Math.random(),
+   514→                role: 'draft' as const,
+   515→                content: t.chat.parsedSummary,
+   516→                draftNodeId: draft.id,
+   517→              },
+   518→            ]);
+   519→            // project match for file-parsed drafts (no missing fields expected)
+   520→            runProjectMatch(draft);
+   521→          }
+   522→        }
+   523→      } catch {
+   524→        setMessages((prev) => [
+   525→          ...prev,
+   526→          {
+   527→            id: Date.now().toString() + 'e',
+   528→            role: 'ai' as const,
+   529→            content: t.chat.fileParseError,
+   530→          },
+   531→        ]);
+   532→      }
+   533→      setAttachedFile(null);
+   534→      setIsProcessing(false);
+   535→      return;
+   536→    }
+   537→
+   538→    /* ---- thinking animation ---- */
+   539→    const thinkId = Date.now().toString() + 't';
+   540→    setMessages((prev) => [
+   541→      ...prev,
+   542→      {
+   543→        id: thinkId,
+   544→        role: 'ai' as const,
+   545→        content: t.chat.thinking,
+   546→        isThinking: true,
+   547→      },
+   548→    ]);
+   549→
+   550→    await new Promise((r) => setTimeout(r, 600));
+   551→
+   552→    /* ---- parse & create draft ---- */
+   553→    const result = parseUserInput(text, language);
+   554→    const draft = createDraftNode(result, 'demo-workspace');
+   555→    addNode(draft);
+   556→
+   557→    if (result.missingFields.length > 0) {
+   558→      // replace thinking with draft card, then start clarification
+   559→      setMessages((prev) =>
+   560→        prev.map((m) =>
+   561→          m.id === thinkId
+   562→            ? {
+   563→                id: thinkId,
+   564→                role: 'draft' as const,
+   565→                content: t.chat.clarifyingTitle,
+   566→                draftNodeId: draft.id,
+   567→              }
+   568→            : m,
+   569→        ),
+   570→      );
+   571→
+   572→      const firstField = result.missingFields[0];
+   573→      setClarificationState({
+   574→        awaiting: {
+   575→          fieldName: firstField,
+   576→          nodeId: draft.id,
+   577→          remainingFields: result.missingFields,
+   578→        },
+   579→      });
+   580→
+   581→      await new Promise((r) => setTimeout(r, 200));
+   582→
+   583→      setMessages((prev) => [
+   584→        ...prev,
+   585→        {
+   586→          id: Date.now().toString() + 'q',
+   587→          role: 'ai' as const,
+   588→          content: getFieldLabel(firstField),
+   589→        },
+   590→      ]);
+   591→    } else {
+   592→      // no missing fields → confirm card + project match
+   593→      setMessages((prev) =>
+   594→        prev.map((m) =>
+   595→          m.id === thinkId
+   596→            ? {
+   597→                id: thinkId,
+   598→                role: 'draft' as const,
+   599→                content: t.chat.parsedSummary,
+   600→                draftNodeId: draft.id,
+   601→              }
+   602→            : m,
+   603→        ),
+   604→      );
+   605→      runProjectMatch(draft);
+   606→    }
+   607→
+   608→    setIsProcessing(false);
+   609→  }, [
+   610→    input,
+   611→    attachedFile,
+   612→    language,
+   613→    locale,
+   614→    addNode,
+   615→    updateNode,
+   616→    nodes,
+   617→    clarificationState,
+   618→    getFieldLabel,
+   619→    runProjectMatch,
+   620→    t,
+   621→  ]);
+   622→
+   623→  /* ================================================================ */
+   624→  /*  Render helpers                                                   */
+   625→  /* ================================================================ */
+   626→
+   627→  const renderProjectMatchCard = (msg: ChatMessage) => {
+   628→    const d = msg.projectMatchData;
+   629→    if (!d) return null;
+   630→    return (
+   631→      <div
+   632→        key={msg.id}
+   633→        className="rounded-xl border border-amber-500/20 bg-amber-50 p-3 dark:bg-amber-950/30"
+   634→      >
+   635→        <div className="mb-2 flex items-center gap-2">
+   636→          <FolderOpen className="size-3.5 text-amber-600 dark:text-amber-400" />
+   637→          <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+   638→            {t.chat.projectSuggestion}
+   639→          </span>
+   640→        </div>
+   641→        <p className="mb-1 text-sm font-medium">{d.projectName}</p>
+   642→        <p className="mb-3 text-xs text-muted-foreground">
+   643→          {t.chat.projectMatchDesc}
+   644→        </p>
+   645→        <div className="mb-3 flex items-center gap-2">
+   646→          <Badge
+   647→            variant="outline"
+   648→            className="h-5 border-amber-500/30 px-1.5 text-[10px] text-amber-600 dark:text-amber-400"
+   649→          >
+   650→            {d.confidence}%
+   651→          </Badge>
+   652→        </div>
+   653→        <div className="flex items-center gap-2">
+   654→          <Button
+   655→            size="sm"
+   656→            className="h-7 gap-1 bg-amber-600 text-xs text-white hover:bg-amber-700"
+   657→            onClick={() => handleAddToProject(d.projectId, d.nodeId)}
+   658→          >
+   659→            <FolderOpen className="size-3" />
+   660→            {t.chat.addToProject}
+   661→          </Button>
+   662→          <Button
+   663→            variant="ghost"
+   664→            size="sm"
+   665→            className="h-7 gap-1 text-xs text-muted-foreground"
+   666→            onClick={() => handleKeepUnsorted(d.nodeId)}
+   667→          >
+   668→            {t.chat.keepUnsorted}
+   669→          </Button>
+   670→        </div>
+   671→      </div>
+   672→    );
+   673→  };
+   674→
+   675→  const renderDraftCard = (msg: ChatMessage) => {
+   676→    const node = nodes[msg.draftNodeId!];
+   677→    if (!node) return null;
+   678→
+   679→    const TypeIcon = typeIcon(node.type);
+   680→    const scheduleStr = formatSchedule(node);
+   681→    const isClarifying = clarificationState.awaiting?.nodeId === node.id;
+   682→    const isEditing = editingNodeId === node.id;
+   683→    const isConfirmed = node.aiMeta?.status === 'confirmed';
+   684→
+   685→    return (
+   686→      <div
+   687→        key={msg.id}
+   688→        className="rounded-xl border border-primary/20 bg-primary/5 p-3"
+   689→      >
+   690→        <p className="mb-2 text-xs font-medium text-primary">{msg.content}</p>
+   691→
+   692→        <div className="rounded-lg border bg-card p-3">
+   693→          {/* ---- EDIT MODE ---- */}
+   694→          {isEditing && (
+   695→            <div className="space-y-2">
+   696→              {/* Title */}
+   697→              <div>
+   698→                <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+   699→                  {t.chat.editTitle}
+   700→                </label>
+   701→                <Input
+   702→                  value={editValues.title}
+   703→                  onChange={(e) =>
+   704→                    setEditValues((v) => ({ ...v, title: e.target.value }))
+   705→                  }
+   706→                  placeholder={t.chat.editTitlePlaceholder}
+   707→                  className="h-8 text-sm"
+   708→                />
+   709→              </div>
+   710→
+   711→              {/* Location (calendar_event only) */}
+   712→              {node.type === 'calendar_event' && (
+   713→                <div>
+   714→                  <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+   715→                    {t.chat.editLocation}
+   716→                  </label>
+   717→                  <Input
+   718→                    value={editValues.location}
+   719→                    onChange={(e) =>
+   720→                      setEditValues((v) => ({
+   721→                        ...v,
+   722→                        location: e.target.value,
+   723→                      }))
+   724→                    }
+   725→                    placeholder={t.chat.editLocationPlaceholder}
+   726→                    className="h-8 text-sm"
+   727→                  />
+   728→                </div>
+   729→              )}
+   730→
+   731→              {/* Attendees (calendar_event only) */}
+   732→              {node.type === 'calendar_event' && (
+   733→                <div>
+   734→                  <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+   735→                    {t.chat.editAttendees}
+   736→                  </label>
+   737→                  <Input
+   738→                    value={editValues.attendees}
+   739→                    onChange={(e) =>
+   740→                      setEditValues((v) => ({
+   741→                        ...v,
+   742→                        attendees: e.target.value,
+   743→                      }))
+   744→                    }
+   745→                    placeholder={t.chat.editAttendeesPlaceholder}
+   746→                    className="h-8 text-sm"
+   747→                  />
+   748→                </div>
+   749→              )}
+   750→
+   751→              {/* Duration (calendar_event only) */}
+   752→              {node.type === 'calendar_event' && (
+   753→                <div>
+   754→                  <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+   755→                    {t.chat.editDuration}
+   756→                  </label>
+   757→                  <Input
+   758→                    value={editValues.duration}
+   759→                    onChange={(e) =>
+   760→                      setEditValues((v) => ({
+   761→                        ...v,
+   762→                        duration: e.target.value,
+   763→                      }))
+   764→                    }
+   765→                    type="number"
+   766→                    min="1"
+   767→                    className="h-8 text-sm"
+   768→                  />
+   769→                </div>
+   770→              )}
+   771→
+   772→              {/* Description */}
+   773→              <div>
+   774→                <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+   775→                  {t.chat.editDescription}
+   776→                </label>
+   777→                <Textarea
+   778→                  value={editValues.description}
+   779→                  onChange={(e) =>
+   780→                    setEditValues((v) => ({
+   781→                      ...v,
+   782→                      description: e.target.value,
+   783→                    }))
+   784→                  }
+   785→                  placeholder={t.chat.editDescriptionPlaceholder}
+   786→                  className="min-h-[60px] text-sm"
+   787→                  rows={2}
+   788→                />
+   789→              </div>
+   790→
+   791→              <div className="flex items-center gap-2 pt-1">
+   792→                <Button
+   793→                  size="sm"
+   794→                  className="h-7 gap-1 bg-primary text-xs text-primary-foreground hover:bg-primary/90"
+   795→                  onClick={() => handleSaveEdit(node.id)}
+   796→                >
+   797→                  <Check className="size-3" />
+   798→                  {t.chat.saveEdit}
+   799→                </Button>
+   800→                <Button
+   801→                  variant="ghost"
+   802→                  size="sm"
+   803→                  className="h-7 gap-1 text-xs text-muted-foreground"
+   804→                  onClick={() => setEditingNodeId(null)}
+   805→                >
+   806→                  {t.chat.cancelDraft}
+   807→                </Button>
+   808→              </div>
+   809→            </div>
+   810→          )}
+   811→
+   812→          {/* ---- DISPLAY MODE ---- */}
+   813→          {!isEditing && (
+   814→            <>
+   815→              <div className="mb-2 flex items-center gap-2">
+   816→                <TypeIcon className="size-3.5 text-primary" />
+   817→                <Badge
+   818→                  variant="secondary"
+   819→                  className="h-5 px-1.5 text-[10px]"
+   820→                >
+   821→                  {typeLabel(node.type)}
+   822→                </Badge>
+   823→              </div>
+   824→
+   825→              <p className="text-sm font-medium">{node.title}</p>
+   826→
+   827→              {scheduleStr && (
+   828→                <p className="mt-1.5 text-xs text-muted-foreground">
+   829→                  {scheduleStr}
+   830→                </p>
+   831→              )}
+   832→
+   833→              {node.description && (
+   834→                <p className="mt-1 text-xs text-muted-foreground">
+   835→                  {node.description}
+   836→                </p>
+   837→              )}
+   838→
+   839→              {/* Draft actions */}
+   840→              {node.aiMeta?.status === 'draft' && (
+   841→                <>
+   842→                  {/* Clarifying indicator */}
+   843→                  {isClarifying && (
+   844→                    <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+   845→                      <AlertCircle className="size-3" />
+   846→                      <span>{t.chat.clarification}</span>
+   847→                    </div>
+   848→                  )}
+   849→
+   850→                  {/* Confirm / Edit / Cancel — only when NOT clarifying */}
+   851→                  {!isClarifying && (
+   852→                    <div className="mt-3 flex flex-wrap items-center gap-2">
+   853→                      <Button
+   854→                        size="sm"
+   855→                        className="h-7 gap-1 bg-primary text-xs text-primary-foreground hover:bg-primary/90"
+   856→                        onClick={() => handleConfirmDraft(node)}
+   857→                      >
+   858→                        {t.chat.confirmDraft}
+   859→                      </Button>
+   860→                      <Button
+   861→                        variant="ghost"
+   862→                        size="sm"
+   863→                        className="h-7 gap-1 text-xs text-muted-foreground"
+   864→                        onClick={() => handleStartEdit(node)}
+   865→                      >
+   866→                        <Pencil className="size-3" />
+   867→                        {t.chat.editDraft}
+   868→                      </Button>
+   869→                      <Button
+   870→                        variant="ghost"
+   871→                        size="sm"
+   872→                        className="h-7 gap-1 text-xs text-muted-foreground"
+   873→                        onClick={() => handleCancelDraft(node.id)}
+   874→                      >
+   875→                        <XCircle className="size-3" />
+   876→                        {t.chat.cancelDraft}
+   877→                      </Button>
+   878→                    </div>
+   879→                  )}
+   880→                </>
+   881→              )}
+   882→            </>
+   883→          )}
+   884→        </div>
+   885→      </div>
+   886→    );
+   887→  };
+   888→
+   889→  /* ================================================================ */
+   890→  /*  JSX                                                              */
+   891→  /* ================================================================ */
+   892→
+   893→  return (
+   894→    <>
+   895→      {/* ============ Floating Action Button ============ */}
+   896→      <AnimatePresence>
+   897→        {!open && (
+   898→          <motion.button
+   899→            initial={{ scale: 0, opacity: 0 }}
+   900→            animate={{ scale: 1, opacity: 1 }}
+   901→            exit={{ scale: 0, opacity: 0 }}
+   902→            transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+   903→            onClick={() => setOpen(true)}
+   904→            className="fixed bottom-20 right-4 z-50 flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-lg shadow-teal-500/25 lg:bottom-6"
+   905→            aria-label={t.chat.title}
+   906→          >
+   907→            <MessageCircle className="size-5" />
+   908→            {draftCount > 0 && (
+   909→              <span className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+   910→                {draftCount}
+   911→              </span>
+   912→            )}
+   913→          </motion.button>
+   914→        )}
+   915→      </AnimatePresence>
+   916→
+   917→      {/* ============ Chat Panel ============ */}
+   918→      <AnimatePresence>
+   919→        {open && (
+   920→          <motion.div
+   921→            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+   922→            animate={{ opacity: 1, y: 0, scale: 1 }}
+   923→            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+   924→            transition={{ duration: 0.2, ease: 'easeOut' }}
+   925→            className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-[420px] lg:inset-auto lg:right-4 lg:bottom-6 lg:top-auto"
+   926→          >
+   927→            <div className="flex h-[70vh] max-h-[560px] flex-col rounded-t-2xl border bg-card shadow-2xl lg:h-[480px] lg:rounded-2xl">
+   928→              {/* ---- Header ---- */}
+   929→              <div className="flex items-center justify-between border-b px-4 py-3">
+   930→                <div className="flex items-center gap-2">
+   931→                  <div className="flex size-7 items-center justify-center rounded-lg bg-gradient-to-br from-teal-500 to-emerald-600">
+   932→                    <MessageCircle className="size-3.5 text-white" />
+   933→                  </div>
+   934→                  <span className="text-sm font-semibold">{t.chat.title}</span>
+   935→                </div>
+   936→                <Button
+   937→                  variant="ghost"
+   938→                  size="icon"
+   939→                  className="size-8"
+   940→                  onClick={() => setOpen(false)}
+   941→                >
+   942→                  <X className="size-4" />
+   943→                </Button>
+   944→              </div>
+   945→
+   946→              {/* ---- Messages ---- */}
+   947→              <ScrollArea className="flex-1 px-4 py-3">
+   948→                <div className="space-y-3">
+   949→                  {messages.map((msg) => {
+   950→                    /* Thinking indicator */
+   951→                    if (msg.isThinking) {
+   952→                      return (
+   953→                        <div key={msg.id} className="flex gap-2">
+   954→                          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
+   955→                            <Loader2 className="size-3 animate-spin text-muted-foreground" />
+   956→                          </div>
+   957→                          <p className="text-xs italic text-muted-foreground">
+   958→                            {msg.content}
+   959→                          </p>
+   960→                        </div>
+   961→                      );
+   962→                    }
+   963→
+   964→                    /* User bubble */
+   965→                    if (msg.role === 'user') {
+   966→                      return (
+   967→                        <div key={msg.id} className="flex justify-end">
+   968→                          <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
+   969→                            {msg.content}
+   970→                          </div>
+   971→                        </div>
+   972→                      );
+   973→                    }
+   974→
+   975→                    /* Draft card */
+   976→                    if (msg.role === 'draft' && msg.draftNodeId) {
+   977→                      return renderDraftCard(msg);
+   978→                    }
+   979→
+   980→                    /* Project match suggestion */
+   981→                    if (msg.role === 'project_match') {
+   982→                      return renderProjectMatchCard(msg);
+   983→                    }
+   984→
+   985→                    /* AI text message */
+   986→                    return (
+   987→                      <div key={msg.id} className="flex gap-2">
+   988→                        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
+   989→                          <MessageCircle className="size-3 text-muted-foreground" />
+   990→                        </div>
+   991→                        <p className="max-w-[85%] text-sm leading-relaxed text-foreground">
+   992→                          {msg.content}
+   993→                        </p>
+   994→                      </div>
+   995→                    );
+   996→                  })}
+   997→                  <div ref={messagesEndRef} />
+   998→                </div>
+   999→              </ScrollArea>
+  1000→
+  1001→              {/* ---- Attached file chip ---- */}
+  1002→              {attachedFile && (
+  1003→                <div className="flex items-center gap-1.5 border-t px-4 py-2">
+  1004→                  <span className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+  1005→                    <Paperclip className="size-3" />
+  1006→                    {t.chat.fileAttached}
+  1007→                    <button
+  1008→                      onClick={() => setAttachedFile(null)}
+  1009→                      className="ml-0.5 text-muted-foreground hover:text-foreground"
+  1010→                    >
+  1011→                      <X className="size-3" />
+  1012→                    </button>
+  1013→                  </span>
+  1014→                </div>
+  1015→              )}
+  1016→
+  1017→              {/* ---- Input area ---- */}
+  1018→              <div className="border-t px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+  1019→                <div className="flex items-center gap-2">
+  1020→                  {/* hidden file input */}
+  1021→                  <input
+  1022→                    ref={fileInputRef}
+  1023→                    type="file"
+  1024→                    accept=".txt,.md,.json,.csv"
+  1025→                    onChange={handleFileSelect}
+  1026→                    className="hidden"
+  1027→                  />
+  1028→
+  1029→                  {/* Paperclip */}
+  1030→                  <Button
+  1031→                    variant="ghost"
+  1032→                    size="icon"
+  1033→                    className="size-8 shrink-0 text-muted-foreground"
+  1034→                    onClick={() => fileInputRef.current?.click()}
+  1035→                  >
+  1036→                    <Paperclip className="size-4" />
+  1037→                  </Button>
+  1038→
+  1039→                  {/* Voice (Phase 4 placeholder) */}
+  1040→                  <Button
+  1041→                    id="voice-btn"
+  1042→                    variant="ghost"
+  1043→                    size="icon"
+  1044→                    className="size-8 shrink-0 text-muted-foreground"
+  1045→                    onClick={handleVoiceClick}
+  1046→                    aria-label={t.chat.title}
+  1047→                  >
+  1048→                    <Mic className="size-4" />
+  1049→                  </Button>
+  1050→
+  1051→                  {/* Text input */}
+  1052→                  <input
+  1053→                    ref={inputRef}
+  1054→                    type="text"
+  1055→                    value={input}
+  1056→                    onChange={(e) => setInput(e.target.value)}
+  1057→                    onKeyDown={(e) => {
+  1058→                      if (e.key === 'Enter' && !e.shiftKey && !isProcessing) {
+  1059→                        e.preventDefault();
+  1060→                        handleSend();
+  1061→                      }
+  1062→                    }}
+  1063→                    placeholder={
+  1064→                      clarificationState.awaiting
+  1065→                        ? getFieldLabel(clarificationState.awaiting.fieldName)
+  1066→                        : t.chat.placeholder
+  1067→                    }
+  1068→                    className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+  1069→                    disabled={isProcessing}
+  1070→                  />
+  1071→
+  1072→                  {/* Send */}
+  1073→                  <Button
+  1074→                    size="icon"
+  1075→                    className="size-8 shrink-0 bg-primary text-primary-foreground hover:bg-primary/90"
+  1076→                    onClick={handleSend}
+  1077→                    disabled={isProcessing || (!input.trim() && !attachedFile)}
+  1078→                  >
+  1079→                    {isProcessing ? (
+  1080→                      <Loader2 className="size-3.5 animate-spin" />
+  1081→                    ) : (
+  1082→                      <Send className="size-3.5" />
+  1083→                    )}
+  1084→                  </Button>
+  1085→                </div>
+  1086→              </div>
+  1087→            </div>
+  1088→          </motion.div>
+  1089→        )}
+  1090→      </AnimatePresence>
+  1091→    </>
+  1092→  );
+  1093→}

@@ -1,0 +1,1474 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+     4→     4→import { motion, AnimatePresence } from 'framer-motion';
+     5→     5→import {
+     6→     6→  useNodeStore,
+     7→     7→  useProjectStore,
+     8→     8→  useNavStore,
+     9→     9→  useAuthStore,
+    10→    10→} from '@/lib/store';
+    11→    11→import { useLocale } from '@/hooks/use-locale';
+    12→    12→import { createNode, generateId, calcPriorityScore } from '@/lib/services';
+    13→    13→import { useIsMobile } from '@/hooks/use-mobile';
+    14→    14→import type { Node, NodeStatus } from '@/lib/types';
+    15→    15→
+    16→    16→import { Button } from '@/components/ui/button';
+    17→    17→import { Badge } from '@/components/ui/badge';
+    18→    18→import { Progress } from '@/components/ui/progress';
+    19→    19→import { Input } from '@/components/ui/input';
+    20→    20→import { Textarea } from '@/components/ui/textarea';
+    21→    21→import {
+    22→    22→  Select,
+    23→    23→  SelectContent,
+    24→    24→  SelectItem,
+    25→    25→  SelectTrigger,
+    26→    26→  SelectValue,
+    27→    27→} from '@/components/ui/select';
+    28→    28→import {
+    29→    29→  AlertDialog,
+    30→    30→  AlertDialogAction,
+    31→    31→  AlertDialogCancel,
+    32→    32→  AlertDialogContent,
+    33→    33→  AlertDialogDescription,
+    34→    34→  AlertDialogFooter,
+    35→    35→  AlertDialogHeader,
+    36→    36→  AlertDialogTitle,
+    37→    37→} from '@/components/ui/alert-dialog';
+    38→    38→import { Card } from '@/components/ui/card';
+    39→    39→import { ScrollArea } from '@/components/ui/scroll-area';
+    40→    40→import { Separator } from '@/components/ui/separator';
+    41→    41→import { Slider } from '@/components/ui/slider';
+    42→    42→import {
+    43→    43→  Plus,
+    44→    44→  Trash2,
+    45→    45→  Edit3,
+    46→    46→  ChevronRight,
+    47→    47→  ChevronDown,
+    48→    48→  ChevronLeft,
+    49→    49→  LayoutGrid,
+    50→    50→  GitBranch,
+    51→    51→  List,
+    52→    52→  Sparkles,
+    53→    53→  Target,
+    54→    54→  Loader2,
+    55→    55→  AlertTriangle,
+    56→    56→  Inbox,
+    57→    57→  Calendar,
+    58→    58→  CheckCircle2,
+    59→    59→  ListTodo,
+    60→    60→  X,
+    61→    61→} from 'lucide-react';
+    62→    62→
+    63→    63→// ---------------------------------------------------------------------------
+    64→    64→// Constants
+    65→    65→// ---------------------------------------------------------------------------
+    66→    66→
+    67→    67→const WORKSPACE_ID = 'demo-workspace';
+    68→    68→
+    69→    69→const RING_POSITIONS: [number, number][] = [
+    70→    70→  [0, 0], [0, 1], [0, 2],
+    71→    71→  [1, 0],           [1, 2],
+    72→    72→  [2, 0], [2, 1], [2, 2],
+    73→    73→];
+    74→    74→
+    75→    75→const ALL_STATUSES: NodeStatus[] = [
+    76→    76→  'scheduled',
+    77→    77→  'in_progress',
+    78→    78→  'waiting',
+    79→    79→  'review',
+    80→    80→  'completed',
+    81→    81→  'on_hold',
+    82→    82→  'cancelled',
+    83→    83→];
+    84→    84→
+    85→    85→const MOCK_AI_SUBGOALS = [
+    86→    86→  '현황 분석 및 벤치마킹',
+    87→    87→  '핵심 성과 지표(KPI) 설정',
+    88→    88→  '단기 실행 계획 수립',
+    89→    89→  '필요 리소스 확보 계획',
+    90→    90→  '담당자 및 역할 정의',
+    91→    91→  '마일스톤 및 일정 설정',
+    92→    92→  '리스크 식별 및 대응 방안',
+    93→    93→  '성과 측정 및 개선 사이클',
+    94→    94→];
+    95→    95→
+    96→    96→const STATUS_VARIANT: Record<
+    97→    97→  NodeStatus,
+    98→    98→  'default' | 'secondary' | 'outline' | 'destructive'
+    99→    99→> = {
+   100→   100→  scheduled: 'outline',
+   101→   101→  in_progress: 'default',
+   102→   102→  waiting: 'secondary',
+   103→   103→  review: 'secondary',
+   104→   104→  completed: 'default',
+   105→   105→  on_hold: 'outline',
+   106→   106→  cancelled: 'destructive',
+   107→   107→};
+   108→   108→
+   109→   109→// ---------------------------------------------------------------------------
+   110→   110→// Helpers
+   111→   111→// ---------------------------------------------------------------------------
+   112→   112→
+   113→   113→function truncate(text: string, max: number): string {
+   114→   114→  if (!text) return '';
+   115→   115→  return text.length > max ? text.slice(0, max) + '…' : text;
+   116→   116→}
+   117→   117→
+   118→   118→function getBreadcrumb(nodeId: string, nodes: Record<string, Node>): string {
+   119→   119→  const parts: string[] = [];
+   120→   120→  let cur: Node | undefined = nodes[nodeId];
+   121→   121→  while (cur) {
+   122→   122→    parts.unshift(cur.title || '(제목 없음)');
+   123→   123→    cur = cur.parentId ? nodes[cur.parentId] : undefined;
+   124→   124→  }
+   125→   125→  return parts.join(' > ');
+   126→   126→}
+   127→   127→
+   128→   128→function typeIcon(type: Node['type']) {
+   129→   129→  switch (type) {
+   130→   130→    case 'goal':
+   131→   131→      return <Target className="size-3.5 shrink-0 text-orange-500" />;
+   132→   132→    case 'task':
+   133→   133→      return <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />;
+   134→   134→    case 'calendar_event':
+   135→   135→      return <Calendar className="size-3.5 shrink-0 text-sky-500" />;
+   136→   136→    case 'todo':
+   137→   137→      return <ListTodo className="size-3.5 shrink-0 text-violet-500" />;
+   138→   138→    default:
+   139→   139→      return <Target className="size-3.5 shrink-0" />;
+   140→   140→  }
+   141→   141→}
+   142→   142→
+   143→   143→function typeLabel(type: Node['type'], t: ReturnType<typeof useLocale>['t']) {
+   144→   144→  switch (type) {
+   145→   145→    case 'goal':
+   146→   146→      return t.nav.mandarat;
+   147→   147→    case 'task':
+   148→   148→      return t.todo.title;
+   149→   149→    case 'calendar_event':
+   150→   150→      return t.calendar.title;
+   151→   151→    case 'todo':
+   152→   152→      return t.todo.title;
+   153→   153→    default:
+   154→   154→      return type;
+   155→   155→  }
+   156→   156→}
+   157→   157→
+   158→   158→// ---------------------------------------------------------------------------
+   159→   159→// StatusBadge
+   160→   160→// ---------------------------------------------------------------------------
+   161→   161→
+   162→   162→function StatusBadge({
+   163→   163→  status,
+   164→   164→  t,
+   165→   165→}: {
+   166→   166→  status: NodeStatus;
+   167→   167→  t: ReturnType<typeof useLocale>['t'];
+   168→   168→}) {
+   169→   169→  const key = status as keyof typeof t.status;
+   170→   170→  const label = t.status[key] ?? status;
+   171→   171→  return (
+   172→   172→    <Badge variant={STATUS_VARIANT[status]} className="text-[10px] h-5 px-1.5">
+   173→   173→      {label}
+   174→   174→    </Badge>
+   175→   175→  );
+   176→   176→}
+   177→   177→
+   178→   178→// ---------------------------------------------------------------------------
+   179→   179→// DetailPanel
+   180→   180→// ---------------------------------------------------------------------------
+   181→   181→
+   182→   182→interface DetailForm {
+   183→   183→  title: string;
+   184→   184→  description: string;
+   185→   185→  status: NodeStatus;
+   186→   186→  urgency: number;
+   187→   187→  importance: number;
+   188→   188→  progress: number;
+   189→   189→}
+   190→   190→
+   191→   191→function DetailPanel({
+   192→   192→  nodeId,
+   193→   193→  onClose,
+   194→   194→  onDelete,
+   195→   195→  onExpandToGrid,
+   196→   196→  onAddChild,
+   197→   197→  onAiGenerate,
+   198→   198→  aiGenerating,
+   199→   199→  t,
+   200→   200→}: {
+   201→   201→  nodeId: string;
+   202→   202→  onClose: () => void;
+   203→   203→  onDelete: () => void;
+   204→   204→  onExpandToGrid: () => void;
+   205→   205→  onAddChild: () => void;
+   206→   206→  onAiGenerate: () => void;
+   207→   207→  aiGenerating: boolean;
+   208→   208→  t: ReturnType<typeof useLocale>['t'];
+   209→   209→}) {
+   210→   210→  const node = useNodeStore((s) => s.nodes[nodeId]);
+   211→   211→  const updateNodeWithLog = useNodeStore((s) => s.updateNodeWithLog);
+   212→   212→  const recalcParentProgress = useNodeStore((s) => s.recalcParentProgress);
+   213→   213→  const isMobile = useIsMobile();
+   214→   214→
+   215→   215→  const [form, setForm] = useState<DetailForm>(() => {
+   216→   216→    const n = useNodeStore.getState().nodes[nodeId];
+   217→   217→    if (!n) return null;
+   218→   218→    return {
+   219→   219→      title: n.title,
+   220→   220→      description: n.description,
+   221→   221→      status: n.status,
+   222→   222→      urgency: n.priority.urgency,
+   223→   223→      importance: n.priority.importance,
+   224→   224→      progress: n.progress,
+   225→   225→    };
+   226→   226→  });
+   227→   227→  const [deleteOpen, setDeleteOpen] = useState(false);
+   228→   228→
+   229→   229→  if (!node || !form) return null;
+   230→   230→
+   231→   231→  const commitField = (field: keyof DetailForm, value: string | number) => {
+   232→   232→    const updates: Partial<Node> = {};
+   233→   233→    if (field === 'title') updates.title = value as string;
+   234→   234→    if (field === 'description') updates.description = value as string;
+   235→   235→    if (field === 'status') updates.status = value as NodeStatus;
+   236→   236→    if (field === 'urgency' || field === 'importance') {
+   237→   237→      const u = field === 'urgency' ? value : form.urgency;
+   238→   238→      const i = field === 'importance' ? value : form.importance;
+   239→   239→      updates.priority = { urgency: u as number, importance: i as number, score: calcPriorityScore(u as number, i as number) };
+   240→   240→    }
+   241→   241→    if (field === 'progress') {
+   242→   242→      updates.progress = value as number;
+   243→   243→      const newStatus: NodeStatus = value === 100 ? 'completed' : value > 0 ? 'in_progress' : 'scheduled';
+   244→   244→      updates.status = newStatus;
+   245→   245→      updates.completedAt = newStatus === 'completed' ? new Date() : null;
+   246→   246→    }
+   247→   247→    updateNodeWithLog(node.id, updates);
+   248→   248→    if (node.parentId) recalcParentProgress(node.parentId);
+   249→   249→  };
+   250→   250→
+   251→   251→  const handleDelete = () => {
+   252→   252→    onDelete();
+   253→   253→    setDeleteOpen(false);
+   254→   254→  };
+   255→   255→
+   256→   256→  const hasChildren = node.childrenIds.length > 0;
+   257→   257→
+   258→   258→  return (
+   259→   259→    <motion.div
+   260→   260→      initial={{ opacity: 0, x: isMobile ? 0 : 20 }}
+   261→   261→      animate={{ opacity: 1, x: 0 }}
+   262→   262→      exit={{ opacity: 0, x: isMobile ? 0 : 20 }}
+   263→   263→      transition={{ duration: 0.2 }}
+   264→   264→      className="flex flex-col bg-card border rounded-lg overflow-hidden"
+   265→   265→    >
+   266→   266→      {/* Header */}
+   267→   267→      <div className="flex items-center justify-between px-4 py-3 border-b">
+   268→   268→        <span className="text-sm font-semibold">{t.mandarat.editNode}</span>
+   269→   269→        {isMobile && (
+   270→   270→          <Button variant="ghost" size="icon" className="size-7" onClick={onClose}>
+   271→   271→            <X className="size-4" />
+   272→   272→          </Button>
+   273→   273→        )}
+   274→   274→      </div>
+   275→   275→
+   276→   276→      <ScrollArea className="flex-1 max-h-[calc(100vh-320px)] md:max-h-[calc(100vh-280px)]">
+   277→   277→        <div className="p-4 space-y-4">
+   278→   278→          {/* Title */}
+   279→   279→          <div className="space-y-1.5">
+   280→   280→            <label className="text-xs font-medium text-muted-foreground">
+   281→   281→              {t.mandarat.nodeTitlePlaceholder}
+   282→   282→            </label>
+   283→   283→            <Input
+   284→   284→              value={form.title}
+   285→   285→              onChange={(e) => setForm((f) => (f ? { ...f, title: e.target.value } : f))}
+   286→   286→              onBlur={() => commitField('title', form.title)}
+   287→   287→              className="text-sm"
+   288→   288→            />
+   289→   289→          </div>
+   290→   290→
+   291→   291→          {/* Description */}
+   292→   292→          <div className="space-y-1.5">
+   293→   293→            <label className="text-xs font-medium text-muted-foreground">
+   294→   294→              {t.mandarat.nodeDescPlaceholder}
+   295→   295→            </label>
+   296→   296→            <Textarea
+   297→   297→              value={form.description}
+   298→   298→              onChange={(e) => setForm((f) => (f ? { ...f, description: e.target.value } : f))}
+   299→   299→              onBlur={() => commitField('description', form.description)}
+   300→   300→              className="text-sm min-h-[60px] resize-none"
+   301→   301→            />
+   302→   302→          </div>
+   303→   303→
+   304→   304→          <Separator />
+   305→   305→
+   306→   306→          {/* Status */}
+   307→   307→          <div className="space-y-1.5">
+   308→   308→            <label className="text-xs font-medium text-muted-foreground">상태</label>
+   309→   309→            <Select
+   310→   310→              value={form.status}
+   311→   311→              onValueChange={(v) => {
+   312→   312→                setForm((f) => (f ? { ...f, status: v as NodeStatus } : f));
+   313→   313→                commitField('status', v);
+   314→   314→              }}
+   315→   315→            >
+   316→   316→              <SelectTrigger className="w-full">
+   317→   317→                <SelectValue />
+   318→   318→              </SelectTrigger>
+   319→   319→              <SelectContent>
+   320→   320→                {ALL_STATUSES.map((s) => {
+   321→   321→                  const key = s as keyof typeof t.status;
+   322→   322→                  return (
+   323→   323→                    <SelectItem key={s} value={s}>
+   324→   324→                      {t.status[key]}
+   325→   325→                    </SelectItem>
+   326→   326→                  );
+   327→   327→                })}
+   328→   328→              </SelectContent>
+   329→   329→            </Select>
+   330→   330→          </div>
+   331→   331→
+   332→   332→          <Separator />
+   333→   333→
+   334→   334→          {/* Priority */}
+   335→   335→          <div className="space-y-3">
+   336→   336→            <label className="text-xs font-medium text-muted-foreground">우선순위</label>
+   337→   337→            <div className="space-y-2">
+   338→   338→              <div className="flex items-center gap-3">
+   339→   339→                <span className="text-xs w-16 text-muted-foreground">긴급도</span>
+   340→   340→                <Slider
+   341→   341→                  value={[form.urgency]}
+   342→   342→                  min={1}
+   343→   343→                  max={5}
+   344→   344→                  step={1}
+   345→   345→                  onValueChange={([v]) => {
+   346→   346→                    setForm((f) => (f ? { ...f, urgency: v } : f));
+   347→   347→                    commitField('urgency', v);
+   348→   348→                  }}
+   349→   349→                  className="flex-1"
+   350→   350→                />
+   351→   351→                <span className="text-xs font-mono w-4 text-right">{form.urgency}</span>
+   352→   352→              </div>
+   353→   353→              <div className="flex items-center gap-3">
+   354→   354→                <span className="text-xs w-16 text-muted-foreground">중요도</span>
+   355→   355→                <Slider
+   356→   356→                  value={[form.importance]}
+   357→   357→                  min={1}
+   358→   358→                  max={5}
+   359→   359→                  step={1}
+   360→   360→                  onValueChange={([v]) => {
+   361→   361→                    setForm((f) => (f ? { ...f, importance: v } : f));
+   362→   362→                    commitField('importance', v);
+   363→   363→                  }}
+   364→   364→                  className="flex-1"
+   365→   365→                />
+   366→   366→                <span className="text-xs font-mono w-4 text-right">{form.importance}</span>
+   367→   367→              </div>
+   368→   368→            </div>
+   369→   369→          </div>
+   370→   370→
+   371→   371→          <Separator />
+   372→   372→
+   373→   373→          {/* Progress */}
+   374→   374→          <div className="space-y-1.5">
+   375→   375→            <div className="flex items-center justify-between">
+   376→   376→              <label className="text-xs font-medium text-muted-foreground">
+   377→   377→                {t.mandarat.progress}
+   378→   378→              </label>
+   379→   379→              <span className="text-xs font-mono">{form.progress}%</span>
+   380→   380→            </div>
+   381→   381→            <Slider
+   382→   382→              value={[form.progress]}
+   383→   383→              min={0}
+   384→   384→              max={100}
+   385→   385→              step={5}
+   386→   386→              onValueChange={([v]) => {
+   387→   387→                setForm((f) => (f ? { ...f, progress: v } : f));
+   388→   388→                commitField('progress', v);
+   389→   389→              }}
+   390→   390→            />
+   391→   391→            <Progress value={form.progress} className="h-1.5" />
+   392→   392→          </div>
+   393→   393→
+   394→   394→          <Separator />
+   395→   395→
+   396→   396→          {/* Actions */}
+   397→   397→          <div className="space-y-2">
+   398→   398→            <Button
+   399→   399→              variant="outline"
+   400→   400→              size="sm"
+   401→   401→              className="w-full justify-start"
+   402→   402→              onClick={onAddChild}
+   403→   403→            >
+   404→   404→              <Plus className="mr-2 size-3.5" />
+   405→   405→              {t.mandarat.addChild}
+   406→   406→            </Button>
+   407→   407→
+   408→   408→            {!hasChildren && (
+   409→   409→              <Button
+   410→   410→                variant="outline"
+   411→   411→                size="sm"
+   412→   412→                className="w-full justify-start"
+   413→   413→                onClick={onExpandToGrid}
+   414→   414→              >
+   415→   415→                <LayoutGrid className="mr-2 size-3.5" />
+   416→   416→                {t.mandarat.expandToGrid}
+   417→   417→              </Button>
+   418→   418→            )}
+   419→   419→
+   420→   420→            <Button
+   421→   421→              variant="outline"
+   422→   422→              size="sm"
+   423→   423→              className="w-full justify-start text-amber-600 hover:text-amber-700"
+   424→   424→              onClick={onAiGenerate}
+   425→   425→              disabled={aiGenerating || hasChildren}
+   426→   426→            >
+   427→   427→              {aiGenerating ? (
+   428→   428→                <Loader2 className="mr-2 size-3.5 animate-spin" />
+   429→   429→              ) : (
+   430→   430→                <Sparkles className="mr-2 size-3.5" />
+   431→   431→              )}
+   432→   432→              {aiGenerating ? t.mandarat.aiGenerating : t.mandarat.aiGenerate}
+   433→   433→            </Button>
+   434→   434→
+   435→   435→            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+   436→   436→              <Button
+   437→   437→                variant="outline"
+   438→   438→                size="sm"
+   439→   439→                className="w-full justify-start text-destructive hover:text-destructive"
+   440→   440→                onClick={() => setDeleteOpen(true)}
+   441→   441→              >
+   442→   442→                <Trash2 className="mr-2 size-3.5" />
+   443→   443→                {t.mandarat.deleteNode}
+   444→   444→              </Button>
+   445→   445→              <AlertDialogContent>
+   446→   446→                <AlertDialogHeader>
+   447→   447→                  <AlertDialogTitle>{t.mandarat.deleteNode}</AlertDialogTitle>
+   448→   448→                  <AlertDialogDescription>
+   449→   449→                    {t.mandarat.confirmDelete}
+   450→   450→                  </AlertDialogDescription>
+   451→   451→                </AlertDialogHeader>
+   452→   452→                <AlertDialogFooter>
+   453→   453→                  <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>
+   454→   454→                  <AlertDialogAction
+   455→   455→                    onClick={handleDelete}
+   456→   456→                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+   457→   457→                  >
+   458→   458→                    {t.common.delete}
+   459→   459→                  </AlertDialogAction>
+   460→   460→                </AlertDialogFooter>
+   461→   461→              </AlertDialogContent>
+   462→   462→            </AlertDialog>
+   463→   463→          </div>
+   464→   464→        </div>
+   465→   465→      </ScrollArea>
+   466→   466→    </motion.div>
+   467→   467→  );
+   468→   468→}
+   469→   469→
+   470→   470→// ---------------------------------------------------------------------------
+   471→   471→// TreeNodeItem (recursive)
+   472→   472→// ---------------------------------------------------------------------------
+   473→   473→
+   474→   474→function TreeNodeItem({
+   475→   475→  nodeId,
+   476→   476→  depth,
+   477→   477→  selectedNodeId,
+   478→   478→  onSelect,
+   479→   479→  onAddChild,
+   480→   480→  t,
+   481→   481→}: {
+   482→   482→  nodeId: string;
+   483→   483→  depth: number;
+   484→   484→  selectedNodeId: string | null;
+   485→   485→  onSelect: (id: string) => void;
+   486→   486→  onAddChild: (parentId: string) => void;
+   487→   487→  t: ReturnType<typeof useLocale>['t'];
+   488→   488→}) {
+   489→   489→  const node = useNodeStore((s) => s.nodes[nodeId]);
+   490→   490→  const children = useNodeStore((s) => s.getChildNodes(nodeId));
+   491→   491→  const [expanded, setExpanded] = useState(depth < 1);
+   492→   492→  const [addingChild, setAddingChild] = useState(false);
+   493→   493→  const [childTitle, setChildTitle] = useState('');
+   494→   494→  const inputRef = useRef<HTMLInputElement>(null);
+   495→   495→
+   496→   496→  useEffect(() => {
+   497→   497→    if (addingChild && inputRef.current) inputRef.current.focus();
+   498→   498→  }, [addingChild]);
+   499→   499→
+   500→   500→  if (!node) return null;
+   501→   501→
+   502→   502→  const handleAddChild = () => {
+   503→   503→    if (!childTitle.trim()) { setAddingChild(false); return; }
+   504→   504→    onAddChild(nodeId);
+   505→   505→    setAddingChild(false);
+   506→   506→    setChildTitle('');
+   507→   507→  };
+   508→   508→
+   509→   509→  return (
+   510→   510→    <div>
+   511→   511→      <div
+   512→   512→        role="button"
+   513→   513→        tabIndex={0}
+   514→   514→        onClick={() => onSelect(node.id)}
+   515→   515→        onKeyDown={(e) => e.key === 'Enter' && onSelect(node.id)}
+   516→   516→        className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors hover:bg-muted/60 ${
+   517→   517→          selectedNodeId === node.id ? 'bg-primary/10 ring-1 ring-primary/30' : ''
+   518→   518→        }`}
+   519→   519→        style={{ paddingLeft: `${depth * 20 + 8}px` }}
+   520→   520→      >
+   521→   521→        {/* Expand toggle */}
+   522→   522→        <button
+   523→   523→          onClick={(e) => {
+   524→   524→            e.stopPropagation();
+   525→   525→            setExpanded((v) => !v);
+   526→   526→          }}
+   527→   527→          className="shrink-0 p-0.5 rounded hover:bg-muted"
+   528→   528→        >
+   529→   529→          {children.length > 0 ? (
+   530→   530→            expanded ? (
+   531→   531→              <ChevronDown className="size-3.5 text-muted-foreground" />
+   532→   532→            ) : (
+   533→   533→              <ChevronRight className="size-3.5 text-muted-foreground" />
+   534→   534→            )
+   535→   535→          ) : (
+   536→   536→            <span className="w-3.5" />
+   537→   537→          )}
+   538→   538→        </button>
+   539→   539→
+   540→   540→        {/* Type icon */}
+   541→   541→        {typeIcon(node.type)}
+   542→   542→
+   543→   543→        {/* Title */}
+   544→   544→        <span className="text-sm truncate flex-1 min-w-0">{node.title || '(제목 없음)'}</span>
+   545→   545→
+   546→   546→        {/* Status badge */}
+   547→   547→        <StatusBadge status={node.status} t={t} />
+   548→   548→
+   549→   549→        {/* Progress */}
+   550→   550→        <div className="flex items-center gap-1.5 shrink-0 w-20">
+   551→   551→          <Progress value={node.progress} className="h-1 flex-1" />
+   552→   552→          <span className="text-[10px] text-muted-foreground w-7 text-right">
+   553→   553→            {node.progress}%
+   554→   554→          </span>
+   555→   555→        </div>
+   556→   556→
+   557→   557→        {/* Add child */}
+   558→   558→        <button
+   559→   559→          onClick={(e) => {
+   560→   560→            e.stopPropagation();
+   561→   561→            setAddingChild(true);
+   562→   562→          }}
+   563→   563→          className="shrink-0 p-1 rounded hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity"
+   564→   564→          aria-label={t.mandarat.addChild}
+   565→   565→        >
+   566→   566→          <Plus className="size-3 text-muted-foreground" />
+   567→   567→        </button>
+   568→   568→      </div>
+   569→   569→
+   570→   570→      {/* Inline child add */}
+   571→   571→      <AnimatePresence>
+   572→   572→        {addingChild && (
+   573→   573→          <motion.div
+   574→   574→            initial={{ height: 0, opacity: 0 }}
+   575→   575→            animate={{ height: 'auto', opacity: 1 }}
+   576→   576→            exit={{ height: 0, opacity: 0 }}
+   577→   577→            className="overflow-hidden"
+   578→   578→            style={{ paddingLeft: `${(depth + 1) * 20 + 8}px` }}
+   579→   579→          >
+   580→   580→            <div className="flex items-center gap-1.5 py-1">
+   581→   581→              <Input
+   582→   582→                ref={inputRef}
+   583→   583→                value={childTitle}
+   584→   584→                onChange={(e) => setChildTitle(e.target.value)}
+   585→   585→                onBlur={handleAddChild}
+   586→   586→                onKeyDown={(e) => {
+   587→   587→                  if (e.key === 'Enter') handleAddChild();
+   588→   588→                  if (e.key === 'Escape') { setAddingChild(false); setChildTitle(''); }
+   589→   589→                }}
+   590→   590→                placeholder={t.mandarat.nodeTitlePlaceholder}
+   591→   591→                className="h-7 text-xs"
+   592→   592→              />
+   593→   593→            </div>
+   594→   594→          </motion.div>
+   595→   595→        )}
+   596→   596→      </AnimatePresence>
+   597→   597→
+   598→   598→      {/* Children */}
+   599→   599→      <AnimatePresence>
+   600→   600→        {expanded &&
+   601→   601→          children.map((child) => (
+   602→   602→            <motion.div
+   603→   603→              key={child.id}
+   604→   604→              initial={{ opacity: 0, height: 0 }}
+   605→   605→              animate={{ opacity: 1, height: 'auto' }}
+   606→   606→              exit={{ opacity: 0, height: 0 }}
+   607→   607→              className="overflow-hidden"
+   608→   608→            >
+   609→   609→              <TreeNodeItem
+   610→   610→                nodeId={child.id}
+   611→   611→                depth={depth + 1}
+   612→   612→                selectedNodeId={selectedNodeId}
+   613→   613→                onSelect={onSelect}
+   614→   614→                onAddChild={onAddChild}
+   615→   615→                t={t}
+   616→   616→              />
+   617→   617→            </motion.div>
+   618→   618→          ))}
+   619→   619→      </AnimatePresence>
+   620→   620→    </div>
+   621→   621→  );
+   622→   622→}
+   623→   623→
+   624→   624→// ---------------------------------------------------------------------------
+   625→   625→// MandaratView (main export)
+   626→   626→// ---------------------------------------------------------------------------
+   627→   627→
+   628→   628→export function MandaratView() {
+   629→   629→  const { t } = useLocale();
+   630→   630→  const isMobile = useIsMobile();
+   631→   631→
+   632→   632→  // --- Stores ---
+   633→   633→  const nodes = useNodeStore((s) => s.nodes);
+   634→   634→  const addNodeWithLog = useNodeStore((s) => s.addNodeWithLog);
+   635→   635→  const updateNodeWithLog = useNodeStore((s) => s.updateNodeWithLog);
+   636→   636→  const updateNode = useNodeStore((s) => s.updateNode);
+   637→   637→  const removeNode = useNodeStore((s) => s.removeNode);
+   638→   638→  const removeNodeWithLog = useNodeStore((s) => s.removeNodeWithLog);
+   639→   639→  const moveNode = useNodeStore((s) => s.moveNode);
+   640→   640→  const getChildNodes = useNodeStore((s) => s.getChildNodes);
+   641→   641→  const getDescendantNodes = useNodeStore((s) => s.getDescendantNodes);
+   642→   642→  const getNodesByProject = useNodeStore((s) => s.getNodesByProject);
+   643→   643→  const getUnsortedNodes = useNodeStore((s) => s.getUnsortedNodes);
+   644→   644→  const recalcParentProgress = useNodeStore((s) => s.recalcParentProgress);
+   645→   645→
+   646→   646→  const projects = useProjectStore((s) => s.projects);
+   647→   647→  const addProject = useProjectStore((s) => s.addProject);
+   648→   648→
+   649→   649→  const selectedProjectId = useNavStore((s) => s.selectedProjectId);
+   650→   650→  const setSelectedProject = useNavStore((s) => s.setSelectedProject);
+   651→   651→  const selectedNodeId = useNavStore((s) => s.selectedNodeId);
+   652→   652→  const setSelectedNode = useNavStore((s) => s.setSelectedNode);
+   653→   653→
+   654→   654→  // --- Local state ---
+   655→   655→  const [viewMode, setViewMode] = useState<'grid' | 'tree' | 'list'>('grid');
+   656→   656→  const [zoomStack, setZoomStack] = useState<string[]>([]);
+   657→   657→  const [isCreatingGoal, setIsCreatingGoal] = useState(false);
+   658→   658→  const [newGoalTitle, setNewGoalTitle] = useState('');
+   659→   659→  const [aiGenerating, setAiGenerating] = useState(false);
+   660→   660→
+   661→   661→  // Grid inline editing
+   662→   662→  const [editingCellKey, setEditingCellKey] = useState<string | null>(null);
+   663→   663→  const [editValue, setEditValue] = useState('');
+   664→   664→  const editInputRef = useRef<HTMLInputElement>(null);
+   665→   665→
+   666→   666→  // Tree view expanded state
+   667→   667→  const [treeExpanded, setTreeExpanded] = useState<Set<string>>(new Set());
+   668→   668→
+   669→   669→  // --- Derived ---
+   670→   670→  const rootGoal = useMemo(() => {
+   671→   671→    if (!selectedProjectId) return null;
+   672→   672→    return nodes[selectedProjectId] ?? null;
+   673→   673→  }, [selectedProjectId, nodes]);
+   674→   674→
+   675→   675→  const currentCenterId = useMemo(() => {
+   676→   676→    if (zoomStack.length === 0) return selectedProjectId;
+   677→   677→    return zoomStack[zoomStack.length - 1];
+   678→   678→  }, [zoomStack, selectedProjectId]);
+   679→   679→
+   680→   680→  const currentCenter = useMemo(() => {
+   681→   681→    if (!currentCenterId) return null;
+   682→   682→    return nodes[currentCenterId] ?? null;
+   683→   683→  }, [currentCenterId, nodes]);
+   684→   684→
+   685→   685→  const ringChildren = useMemo(() => {
+   686→   686→    if (!currentCenterId) return [];
+   687→   687→    return getChildNodes(currentCenterId);
+   688→   688→  }, [currentCenterId, getChildNodes, nodes]);
+   689→   689→
+   690→   690→  const projectNodes = useMemo(() => {
+   691→   691→    if (!selectedProjectId) return [];
+   692→   692→    return getNodesByProject(selectedProjectId).sort(
+   693→   693→      (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+   694→   694→    );
+   695→   695→  }, [selectedProjectId, getNodesByProject, nodes]);
+   696→   696→
+   697→   697→  const unsortedNodes = useMemo(() => getUnsortedNodes(), [getUnsortedNodes, nodes]);
+   698→   698→
+   699→   699→  const selectedNode = useMemo(() => {
+   700→   700→    if (!selectedNodeId) return null;
+   701→   701→    return nodes[selectedNodeId] ?? null;
+   702→   702→  }, [selectedNodeId, nodes]);
+   703→   703→
+   704→   704→  // --- Effects ---
+   705→   705→  useEffect(() => {
+   706→   706→    if (editingCellKey && editInputRef.current) editInputRef.current.focus();
+   707→   707→  }, [editingCellKey]);
+   708→   708→
+   709→   709→  // Reset zoom when project changes (using ref pattern to avoid setState in effect)
+   710→   710→  const prevProjectIdRef = useRef(selectedProjectId);
+   711→   711→  if (prevProjectIdRef.current !== selectedProjectId) {
+   712→   712→    prevProjectIdRef.current = selectedProjectId;
+   713→   713→    setZoomStack([]);
+   714→   714→    setEditingCellKey(null);
+   715→   715→  }
+   716→   716→
+   717→   717→  // --- Handlers ---
+   718→   718→  const handleCreateGoal = useCallback(() => {
+   719→   719→    if (!newGoalTitle.trim()) { setIsCreatingGoal(false); return; }
+   720→   720→    const newId = generateId();
+   721→   721→    const node = createNode({
+   722→   722→      id: newId,
+   723→   723→      title: newGoalTitle.trim(),
+   724→   724→      workspaceId: WORKSPACE_ID,
+   725→   725→      type: 'goal',
+   726→   726→      projectId: newId,
+   727→   727→    });
+   728→   728→    addNodeWithLog(node);
+   729→   729→    addProject({
+   730→   730→      id: newId,
+   731→   731→      title: newGoalTitle.trim(),
+   732→   732→      progress: 0,
+   733→   733→      memberCount: 1,
+   734→   734→      updatedAt: new Date(),
+   735→   735→    });
+   736→   736→    setSelectedProject(newId);
+   737→   737→    setIsCreatingGoal(false);
+   738→   738→    setNewGoalTitle('');
+   739→   739→  }, [newGoalTitle, addNodeWithLog, addProject, setSelectedProject]);
+   740→   740→
+   741→   741→  const handleSelectNode = useCallback(
+   742→   742→    (id: string) => {
+   743→   743→      setSelectedNode(selectedNodeId === id ? null : id);
+   744→   744→      if (isMobile) {
+   745→   745→        // On mobile, close the grid to show detail
+   746→   746→      }
+   747→   747→    },
+   748→   748→    [selectedNodeId, setSelectedNode, isMobile]
+   749→   749→  );
+   750→   750→
+   751→   751→  const handleAddChild = useCallback(
+   752→   752→    (parentId: string) => {
+   753→   753→      const parent = nodes[parentId];
+   754→   754→      if (!parent) return;
+   755→   755→      const child = createNode({
+   756→   756→        title: '',
+   757→   757→        workspaceId: WORKSPACE_ID,
+   758→   758→        type: 'goal',
+   759→   759→        projectId: parent.projectId,
+   760→   760→        parentId: parent.id,
+   761→   761→      });
+   762→   762→      addNodeWithLog(child);
+   763→   763→      updateNodeWithLog(parentId, {
+   764→   764→        childrenIds: [...parent.childrenIds, child.id],
+   765→   765→      });
+   766→   766→    },
+   767→   767→    [nodes, addNodeWithLog, updateNodeWithLog]
+   768→   768→  );
+   769→   769→
+   770→   770→  const handleDeleteNode = useCallback(() => {
+   771→   771→    if (!selectedNodeId) return;
+   772→   772→    const node = nodes[selectedNodeId];
+   773→   773→    if (!node) return;
+   774→   774→
+   775→   775→    // Collect all descendants
+   776→   776→    const descendants = getDescendantNodes(selectedNodeId);
+   777→   777→    const allIds = [selectedNodeId, ...descendants.map((d) => d.id)];
+   778→   778→
+   779→   779→    // Update parent's childrenIds
+   780→   780→    if (node.parentId) {
+   781→   781→      const parent = nodes[node.parentId];
+   782→   782→      if (parent) {
+   783→   783→        updateNode(parent.parentId, {
+   784→   784→          childrenIds: parent.childrenIds.filter((id) => id !== selectedNodeId),
+   785→   785→        });
+   786→   786→      }
+   787→   787→    }
+   788→   788→
+   789→   789→    // Remove all nodes
+   790→   790→    allIds.forEach((id) => removeNode(id));
+   791→   791→
+   792→   792→    // Log only the main deletion
+   793→   793→    removeNodeWithLog(selectedNodeId);
+   794→   794→
+   795→   795→    // Recalc parent progress
+   796→   796→    if (node.parentId) recalcParentProgress(node.parentId);
+   797→   797→
+   798→   798→    // Clear selection
+   799→   799→    setSelectedNode(null);
+   800→   800→
+   801→   801→    // If deleted node was the current zoom center, go back
+   802→   802→    if (currentCenterId === selectedNodeId && zoomStack.length > 0) {
+   803→   803→      setZoomStack((s) => s.slice(0, -1));
+   804→   804→    }
+   805→   805→  }, [selectedNodeId, nodes, getDescendantNodes, updateNode, removeNode, removeNodeWithLog, recalcParentProgress, setSelectedNode, currentCenterId, zoomStack]);
+   806→   806→
+   807→   807→  const handleExpandToGrid = useCallback(() => {
+   808→   808→    if (!selectedNodeId) return;
+   809→   809→    const node = nodes[selectedNodeId];
+   810→   810→    if (!node || node.childrenIds.length > 0) return;
+   811→   811→
+   812→   812→    const newChildrenIds: string[] = [];
+   813→   813→    for (let i = 1; i <= 8; i++) {
+   814→   814→      const child = createNode({
+   815→   815→        title: `${t.mandarat.coreGoals} ${i}`,
+   816→   816→        workspaceId: WORKSPACE_ID,
+   817→   817→        type: 'goal',
+   818→   818→        projectId: node.projectId,
+   819→   819→        parentId: node.id,
+   820→   820→      });
+   821→   821→      addNodeWithLog(child);
+   822→   822→      newChildrenIds.push(child.id);
+   823→   823→    }
+   824→   824→    updateNodeWithLog(node.id, { childrenIds: newChildrenIds });
+   825→   825→  }, [selectedNodeId, nodes, addNodeWithLog, updateNodeWithLog, t]);
+   826→   826→
+   827→   827→  const handleAiGenerate = useCallback(async () => {
+   828→   828→    if (!selectedNodeId || aiGenerating) return;
+   829→   829→    const node = nodes[selectedNodeId];
+   830→   830→    if (!node || node.childrenIds.length > 0) return;
+   831→   831→
+   832→   832→    setAiGenerating(true);
+   833→   833→
+   834→   834→    // Simulate AI processing
+   835→   835→    await new Promise((r) => setTimeout(r, 1500));
+   836→   836→
+   837→   837→    const newChildrenIds: string[] = [];
+   838→   838→    MOCK_AI_SUBGOALS.forEach((title) => {
+   839→   839→      const child = createNode({
+   840→   840→        title,
+   841→   841→        workspaceId: WORKSPACE_ID,
+   842→   842→        type: 'goal',
+   843→   843→        projectId: node.projectId,
+   844→   844→        parentId: node.id,
+   845→   845→        aiMeta: {
+   846→   846→          status: 'draft',
+   847→   847→          sourceInput: { channel: 'text', rawRef: 'ai-generate' },
+   848→   848→          suggestedProjectId: null,
+   849→   849→          matchConfidence: null,
+   850→   850→          clarificationLog: [],
+   851→   851→        },
+   852→   852→      });
+   853→   853→      addNodeWithLog(child);
+   854→   854→      newChildrenIds.push(child.id);
+   855→   855→    });
+   856→   856→    updateNodeWithLog(node.id, { childrenIds: newChildrenIds });
+   857→   857→    setAiGenerating(false);
+   858→   858→  }, [selectedNodeId, nodes, aiGenerating, addNodeWithLog, updateNodeWithLog]);
+   859→   859→
+   860→   860→  const handleMergeToProject = useCallback(
+   861→   861→    (nodeId: string) => {
+   862→   862→      if (!selectedProjectId) return;
+   863→   863→      const rootId = selectedProjectId;
+   864→   864→      moveNode(nodeId, rootId, rootId);
+   865→   865→    },
+   866→   866→    [selectedProjectId, moveNode]
+   867→   867→  );
+   868→   868→
+   869→   869→  // Grid cell click: empty → add child, filled → select
+   870→   870→  const handleGridCellClick = useCallback(
+   871→   871→    (nodeId: string | null, ringIndex: number) => {
+   872→   872→      if (nodeId) {
+   873→   873→        handleSelectNode(nodeId);
+   874→   874→      } else {
+   875→   875→        // Empty cell → start adding child
+   876→   876→        setEditingCellKey(`ring-${ringIndex}`);
+   877→   877→        setEditValue('');
+   878→   878→      }
+   879→   879→    },
+   880→   880→    [handleSelectNode]
+   881→   881→  );
+   882→   882→
+   883→   883→  // Grid cell double-click → inline edit
+   884→   884→  const handleGridCellDblClick = useCallback((nodeId: string) => {
+   885→   885→    const node = nodes[nodeId];
+   886→   886→    if (!node) return;
+   887→   887→    const idx = ringChildren.findIndex((c) => c.id === nodeId);
+   888→   888→    const key = idx >= 0 ? `ring-${idx}` : 'center';
+   889→   889→    setEditingCellKey(key);
+   890→   890→    setEditValue(node.title);
+   891→   891→  }, [nodes, ringChildren]);
+   892→   892→
+   893→   893→  const handleCellEditSubmit = useCallback(
+   894→   894→    (key: string) => {
+   895→   895→      if (!editValue.trim() || !currentCenterId) {
+   896→   896→        setEditingCellKey(null);
+   897→   897→        return;
+   898→   898→      }
+   899→   899→
+   900→   900→      if (key === 'center') {
+   901→   901→        // Edit center node title
+   902→   902→        updateNodeWithLog(currentCenterId, { title: editValue.trim() });
+   903→   903→        // Update project title too
+   904→   904→        if (selectedProjectId === currentCenterId) {
+   905→   905→          const proj = projects.find((p) => p.id === selectedProjectId);
+   906→   906→          if (proj) {
+   907→   907→            useProjectStore.getState().updateProject(selectedProjectId, { title: editValue.trim() });
+   908→   908→          }
+   909→   909→        }
+   910→   910→      } else if (key.startsWith('ring-')) {
+   911→   911→        const idx = parseInt(key.replace('ring-', ''), 10);
+   912→   912→        const existingChild = ringChildren[idx];
+   913→   913→        if (existingChild) {
+   914→   914→          // Update existing child title
+   915→   915→          updateNodeWithLog(existingChild.id, { title: editValue.trim() });
+   916→   916→        } else {
+   917→   917→          // Create new child
+   918→   918→          const center = nodes[currentCenterId];
+   919→   919→          if (center) {
+   920→   920→            const child = createNode({
+   921→   921→              title: editValue.trim(),
+   922→   922→              workspaceId: WORKSPACE_ID,
+   923→   923→              type: 'goal',
+   924→   924→              projectId: center.projectId,
+   925→   925→              parentId: center.id,
+   926→   926→            });
+   927→   927→            addNodeWithLog(child);
+   928→   928→            updateNodeWithLog(currentCenterId, {
+   929→   929→              childrenIds: [...center.childrenIds, child.id],
+   930→   930→            });
+   931→   931→          }
+   932→   932→        }
+   933→   933→      }
+   934→   934→
+   935→   935→      setEditingCellKey(null);
+   936→   936→      setEditValue('');
+   937→   937→    },
+   938→   938→    [editValue, currentCenterId, selectedProjectId, projects, ringChildren, nodes, updateNodeWithLog, addNodeWithLog]
+   939→   939→  );
+   940→   940→
+   941→   941→  const handleZoomIn = useCallback(
+   942→   942→    (childId: string) => {
+   943→   943→      setZoomStack((s) => [...s, childId]);
+   944→   944→      setEditingCellKey(null);
+   945→   945→    },
+   946→   946→    []
+   947→   947→  );
+   948→   948→
+   949→   949→  const handleZoomOut = useCallback(() => {
+   950→   950→    setZoomStack((s) => s.slice(0, -1));
+   951→   951→    setEditingCellKey(null);
+   952→   952→  }, []);
+   953→   953→
+   954→   954→  const handleZoomToTop = useCallback(() => {
+   955→   955→    setZoomStack([]);
+   956→   956→    setEditingCellKey(null);
+   957→   957→  }, []);
+   958→   958→
+   959→   959→  // Toggle tree expanded
+   960→   960→  const toggleTreeExpand = useCallback((id: string) => {
+   961→   961→    setTreeExpanded((prev) => {
+   962→   962→      const next = new Set(prev);
+   963→   963→      if (next.has(id)) next.delete(id);
+   964→   964→      else next.add(id);
+   965→   965→      return next;
+   966→   966→    });
+   967→   967→  }, []);
+   968→   968→
+   969→   969→  // =====================================================================
+   970→   970→  // RENDER — Top bar
+   971→   971→  // =====================================================================
+   972→   972→
+   973→   973→  const renderTopBar = () => (
+   974→   974→    <div className="flex flex-wrap items-center gap-2">
+   975→   975→      {/* Project selector */}
+   976→   976→      <Select
+   977→   977→        value={selectedProjectId ?? ''}
+   978→   978→        onValueChange={(v) => setSelectedProject(v)}
+   979→   979→      >
+   980→   980→        <SelectTrigger className="w-[180px] sm:w-[220px]" size="sm">
+   981→   981→          <SelectValue placeholder={t.mandarat.selectProject} />
+   982→   982→        </SelectTrigger>
+   983→   983→        <SelectContent>
+   984→   984→          {projects.map((p) => (
+   985→   985→            <SelectItem key={p.id} value={p.id}>
+   986→   986→              {p.title}
+   987→   987→            </SelectItem>
+   988→   988→          ))}
+   989→   989→        </SelectContent>
+   990→   990→      </Select>
+   991→   991→
+   992→   992→      {/* View mode toggle */}
+   993→   993→      <div className="flex items-center bg-muted rounded-lg p-[3px]">
+   994→   994→        {(
+   995→   995→          [
+   996→   996→            { mode: 'grid' as const, icon: LayoutGrid, label: t.mandarat.grid },
+   997→   997→            { mode: 'tree' as const, icon: GitBranch, label: t.mandarat.tree },
+   998→   998→            { mode: 'list' as const, icon: List, label: t.mandarat.list },
+   999→   999→          ] as const
+  1000→  1000→        ).map(({ mode, icon: Icon, label }) => (
+  1001→  1001→          <button
+  1002→  1002→            key={mode}
+  1003→  1003→            onClick={() => setViewMode(mode)}
+  1004→  1004→            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+  1005→  1005→              viewMode === mode
+  1006→  1006→                ? 'bg-background shadow-sm text-foreground'
+  1007→  1007→                : 'text-muted-foreground hover:text-foreground'
+  1008→  1008→            }`}
+  1009→  1009→          >
+  1010→  1010→            <Icon className="size-3.5" />
+  1011→  1011→            <span className="hidden sm:inline">{label}</span>
+  1012→  1012→          </button>
+  1013→  1013→        ))}
+  1014→  1014→      </div>
+  1015→  1015→
+  1016→  1016→      <div className="flex-1" />
+  1017→  1017→
+  1018→  1018→      {/* New Goal / Creating Goal */}
+  1019→  1019→      {isCreatingGoal ? (
+  1020→  1020→        <div className="flex items-center gap-1.5">
+  1021→  1021→          <Input
+  1022→  1022→            value={newGoalTitle}
+  1023→  1023→            onChange={(e) => setNewGoalTitle(e.target.value)}
+  1024→  1024→            onBlur={handleCreateGoal}
+  1025→  1025→            onKeyDown={(e) => {
+  1026→  1026→              if (e.key === 'Enter') handleCreateGoal();
+  1027→  1027→              if (e.key === 'Escape') { setIsCreatingGoal(false); setNewGoalTitle(''); }
+  1028→  1028→            }}
+  1029→  1029→            placeholder={t.mandarat.nodeTitlePlaceholder}
+  1030→  1030→            className="h-8 w-[160px] text-xs"
+  1031→  1031→            autoFocus
+  1032→  1032→          />
+  1033→  1033→        </div>
+  1034→  1034→      ) : (
+  1035→  1035→        <Button
+  1036→  1036→          variant="outline"
+  1037→  1037→          size="sm"
+  1038→  1038→          onClick={() => {
+  1039→  1039→            setIsCreatingGoal(true);
+  1040→  1040→            setNewGoalTitle('');
+  1041→  1041→          }}
+  1042→  1042→        >
+  1043→  1043→          <Plus className="mr-1.5 size-3.5" />
+  1044→  1044→          {t.mandarat.newGoal}
+  1045→  1045→        </Button>
+  1046→  1046→      )}
+  1047→  1047→    </div>
+  1048→  1048→  );
+  1049→  1049→
+  1050→  1050→  // =====================================================================
+  1051→  1051→  // RENDER — Grid View
+  1052→  1052→  // =====================================================================
+  1053→  1053→
+  1054→  1054→  const renderGridView = () => {
+  1055→  1055→    if (!rootGoal) {
+  1056→  1056→      return (
+  1057→  1057→        <motion.div
+  1058→  1058→          initial={{ opacity: 0 }}
+  1059→  1059→          animate={{ opacity: 1 }}
+  1060→  1060→          className="flex flex-col items-center justify-center py-20 text-muted-foreground"
+  1061→  1061→        >
+  1062→  1062→          <Target className="size-12 mb-4 opacity-30" />
+  1063→  1063→          <p className="text-sm">{t.mandarat.noGoals}</p>
+  1064→  1064→        </motion.div>
+  1065→  1065→      );
+  1066→  1066→    }
+  1067→  1067→
+  1068→  1068→    const zoomed = zoomStack.length > 0;
+  1069→  1069→
+  1070→  1070→    return (
+  1071→  1071→      <div className="space-y-3">
+  1072→  1072→        {/* Zoom breadcrumb */}
+  1073→  1073→        {zoomed && (
+  1074→  1074→          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+  1075→  1075→            <button
+  1076→  1076→              onClick={handleZoomToTop}
+  1077→  1077→              className="hover:text-foreground transition-colors font-medium"
+  1078→  1078→            >
+  1079→  1079→              {truncate(rootGoal.title, 15)}
+  1080→  1080→            </button>
+  1081→  1081→            {zoomStack.map((zId, i) => {
+  1082→  1082→              const zNode = nodes[zId];
+  1083→  1083→              const isLast = i === zoomStack.length - 1;
+  1084→  1084→              return (
+  1085→  1085→                <span key={zId} className="flex items-center gap-1.5">
+  1086→  1086→                  <ChevronRight className="size-3" />
+  1087→  1087→                  {isLast ? (
+  1088→  1088→                    <span className="text-foreground font-medium">
+  1089→  1089→                      {truncate(zNode?.title ?? '', 15)}
+  1090→  1090→                    </span>
+  1091→  1091→                  ) : (
+  1092→  1092→                    <button
+  1093→  1093→                      onClick={() => setZoomStack((s) => s.slice(0, i + 1))}
+  1094→  1094→                      className="hover:text-foreground transition-colors"
+  1095→  1095→                    >
+  1096→  1096→                      {truncate(zNode?.title ?? '', 15)}
+  1097→  1097→                    </button>
+  1098→  1098→                  )}
+  1099→  1099→                </span>
+  1100→  1100→              );
+  1101→  1101→            })}
+  1102→  1102→            <button
+  1103→  1103→              onClick={handleZoomOut}
+  1104→  1104→              className="ml-2 p-1 rounded hover:bg-muted transition-colors"
+  1105→  1105→              title={t.mandarat.collapseGrid}
+  1106→  1106→            >
+  1107→  1107→              <ChevronLeft className="size-3.5" />
+  1108→  1108→            </button>
+  1109→  1109→          </div>
+  1110→  1110→        )}
+  1111→  1111→
+  1112→  1112→        {/* 3×3 Grid */}
+  1113→  1113→        <AnimatePresence mode="wait">
+  1114→  1114→          <motion.div
+  1115→  1115→            key={currentCenterId ?? 'empty'}
+  1116→  1116→            initial={{ opacity: 0, scale: 0.95 }}
+  1117→  1117→            animate={{ opacity: 1, scale: 1 }}
+  1118→  1118→            exit={{ opacity: 0, scale: 0.95 }}
+  1119→  1119→            transition={{ duration: 0.2 }}
+  1120→  1120→            className="grid grid-cols-3 gap-1.5 sm:gap-2 max-w-[480px] mx-auto"
+  1121→  1121→          >
+  1122→  1122→            {RING_POSITIONS.map(([r, c], idx) => {
+  1123→  1123→              const child = ringChildren[idx];
+  1124→  1124→              const isEditing = editingCellKey === `ring-${idx}`;
+  1125→  1125→              const isSelected = selectedNodeId === child?.id;
+  1126→  1126→
+  1127→  1127→              return (
+  1128→  1128→                <motion.div
+  1129→  1129→                  key={`${currentCenterId}-${idx}`}
+  1130→  1130→                  initial={{ opacity: 0, y: 6 }}
+  1131→  1131→                  animate={{ opacity: 1, y: 0 }}
+  1132→  1132→                  transition={{ duration: 0.15, delay: idx * 0.03 }}
+  1133→  1133→                  className="aspect-square"
+  1134→  1134→                >
+  1135→  1135→                  {isEditing ? (
+  1136→  1136→                    <div className="h-full rounded-lg border-2 border-primary p-1.5 flex items-center justify-center">
+  1137→  1137→                      <Input
+  1138→  1138→                        ref={editInputRef}
+  1139→  1139→                        value={editValue}
+  1140→  1140→                        onChange={(e) => setEditValue(e.target.value)}
+  1141→  1141→                        onBlur={() => handleCellEditSubmit(`ring-${idx}`)}
+  1142→  1142→                        onKeyDown={(e) => {
+  1143→  1143→                          if (e.key === 'Enter') handleCellEditSubmit(`ring-${idx}`);
+  1144→  1144→                          if (e.key === 'Escape') { setEditingCellKey(null); setEditValue(''); }
+  1145→  1145→                        }}
+  1146→  1146→                        placeholder={t.mandarat.nodeTitlePlaceholder}
+  1147→  1147→                        className="h-8 text-xs text-center"
+  1148→  1148→                      />
+  1149→  1149→                    </div>
+  1150→  1150→                  ) : child ? (
+  1151→  1151→                    <button
+  1152→  1152→                      onClick={() => handleGridCellClick(child.id, idx)}
+  1153→  1153→                      onDoubleClick={() => handleGridCellDblClick(child.id)}
+  1154→  1154→                      className={`group h-full w-full rounded-lg border p-2 sm:p-2.5 flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer hover:shadow-md ${
+  1155→  1155→                        isSelected
+  1156→  1156→                          ? 'border-primary bg-primary/5 shadow-sm'
+  1157→  1157→                          : 'border-border bg-card hover:border-primary/50'
+  1158→  1158→                      }`}
+  1159→  1159→                    >
+  1160→  1160→                      <span className="text-xs sm:text-sm font-medium text-center leading-tight line-clamp-2">
+  1161→  1161→                        {truncate(child.title, 20)}
+  1162→  1162→                      </span>
+  1163→  1163→                      {child.aiMeta?.status === 'draft' && (
+  1164→  1164→                        <Badge variant="secondary" className="text-[9px] h-4 px-1">
+  1165→  1165→                          AI
+  1166→  1166→                        </Badge>
+  1167→  1167→                      )}
+  1168→  1168→                      <div className="w-full flex items-center gap-1.5 mt-auto">
+  1169→  1169→                        <Progress value={child.progress} className="h-1 flex-1" />
+  1170→  1170→                        <StatusBadge status={child.status} t={t} />
+  1171→  1171→                      </div>
+  1172→  1172→                      {/* Zoom-in indicator if has children */}
+  1173→  1173→                      {child.childrenIds.length > 0 && (
+  1174→  1174→                        <div className="absolute -bottom-0.5 -right-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+  1175→  1175→                          <span className="block size-4 rounded-full bg-primary text-primary-foreground text-[8px] leading-4 text-center">
+  1176→  1176→                            {child.childrenIds.length}
+  1177→  1177→                          </span>
+  1178→  1178→                        </div>
+  1179→  1179→                      )}
+  1180→  1180→                      {/* Hover overlay with actions */}
+  1181→  1181→                      <div className="absolute inset-0 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+  1182→  1182→                        <div className="absolute bottom-1 right-1 flex gap-0.5 pointer-events-auto">
+  1183→  1183→                          {child.childrenIds.length > 0 && (
+  1184→  1184→                            <span
+  1185→  1185→                              onClick={(e) => {
+  1186→  1186→                                e.stopPropagation();
+  1187→  1187→                                handleZoomIn(child.id);
+  1188→  1188→                              }}
+  1189→  1189→                              className="block size-5 rounded bg-background/90 border shadow-sm flex items-center justify-center"
+  1190→  1190→                            >
+  1191→  1191→                              <ChevronRight className="size-3" />
+  1192→  1192→                            </span>
+  1193→  1193→                          )}
+  1194→  1194→                        </div>
+  1195→  1195→                      </div>
+  1196→  1196→                    </button>
+  1197→  1197→                  ) : (
+  1198→  1198→                    <button
+  1199→  1199→                      onClick={() => handleGridCellClick(null, idx)}
+  1200→  1200→                      className="h-full w-full rounded-lg border-2 border-dashed border-muted-foreground/30 flex flex-col items-center justify-center gap-1 transition-colors hover:border-primary/50 hover:bg-primary/5"
+  1201→  1201→                    >
+  1202→  1202→                      <Plus className="size-5 text-muted-foreground/40" />
+  1203→  1203→                    </button>
+  1204→  1204→                  )}
+  1205→  1205→                </motion.div>
+  1206→  1206→              );
+  1207→  1207→            })}
+  1208→  1208→
+  1209→  1209→            {/* Center cell */}
+  1210→  1210→            <motion.div
+  1211→  1211→              key={`${currentCenterId}-center`}
+  1212→  1212→              initial={{ opacity: 0, scale: 0.9 }}
+  1213→  1213→              animate={{ opacity: 1, scale: 1 }}
+  1214→  1214→              transition={{ duration: 0.2, delay: 0.08 }}
+  1215→  1215→              className="col-start-2 row-start-2 aspect-square"
+  1216→  1216→            >
+  1217→  1217→              {editingCellKey === 'center' && currentCenter ? (
+  1218→  1218→                <div className="h-full rounded-xl border-2 border-primary p-2 flex items-center justify-center bg-primary/5">
+  1219→  1219→                  <Input
+  1220→  1220→                    ref={editInputRef}
+  1221→  1221→                    value={editValue}
+  1222→  1222→                    onChange={(e) => setEditValue(e.target.value)}
+  1223→  1223→                    onBlur={() => handleCellEditSubmit('center')}
+  1224→  1224→                    onKeyDown={(e) => {
+  1225→  1225→                      if (e.key === 'Enter') handleCellEditSubmit('center');
+  1226→  1226→                      if (e.key === 'Escape') { setEditingCellKey(null); setEditValue(''); }
+  1227→  1227→                    }}
+  1228→  1228→                    placeholder={t.mandarat.nodeTitlePlaceholder}
+  1229→  1229→                    className="h-8 text-xs text-center font-semibold"
+  1230→  1230→                  />
+  1231→  1231→                </div>
+  1232→  1232→              ) : currentCenter ? (
+  1233→  1233→                <button
+  1234→  1234→                  onClick={() => handleSelectNode(currentCenter.id)}
+  1235→  1235→                  onDoubleClick={() => handleGridCellDblClick(currentCenter.id)}
+  1236→  1236→                  className={`group h-full w-full rounded-xl border-2 p-2 sm:p-3 flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer hover:shadow-lg ${
+  1237→  1237→                    selectedNodeId === currentCenter.id
+  1238→  1238→                      ? 'border-primary bg-primary/10 shadow-sm'
+  1239→  1239→                      : 'border-primary bg-primary/5 hover:bg-primary/10'
+  1240→  1240→                  }`}
+  1241→  1241→                >
+  1242→  1242→                  <Target className="size-4 sm:size-5 text-primary shrink-0" />
+  1243→  1243→                  <span className="text-xs sm:text-sm font-semibold text-center leading-tight line-clamp-2">
+  1244→  1244→                    {truncate(currentCenter.title, 20)}
+  1245→  1245→                  </span>
+  1246→  1246→                  <div className="w-full flex items-center gap-1.5 mt-auto">
+  1247→  1247→                    <Progress
+  1248→  1248→                      value={currentCenter.progress}
+  1249→  1249→                      className="h-1.5 flex-1"
+  1250→  1250→                    />
+  1251→  1251→                    <span className="text-[10px] text-muted-foreground font-mono">
+  1252→  1252→                      {currentCenter.progress}%
+  1253→  1253→                    </span>
+  1254→  1254→                  </div>
+  1255→  1255→                  <StatusBadge status={currentCenter.status} t={t} />
+  1256→  1256→                </button>
+  1257→  1257→              ) : (
+  1258→  1258→                <div className="h-full rounded-xl border-2 border-dashed border-muted-foreground/30 flex items-center justify-center">
+  1259→  1259→                  <Target className="size-6 text-muted-foreground/30" />
+  1260→  1260→                </div>
+  1261→  1261→              )}
+  1262→  1262→            </motion.div>
+  1263→  1263→          </motion.div>
+  1264→  1264→        </AnimatePresence>
+  1265→  1265→      </div>
+  1266→  1266→    );
+  1267→  1267→  };
+  1268→  1268→
+  1269→  1269→  // =====================================================================
+  1270→  1270→  // RENDER — Tree View
+  1271→  1271→  // =====================================================================
+  1272→  1272→
+  1273→  1273→  const renderTreeView = () => {
+  1274→  1274→    if (!rootGoal) {
+  1275→  1275→      return (
+  1276→  1276→        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+  1277→  1277→          <GitBranch className="size-12 mb-4 opacity-30" />
+  1278→  1278→          <p className="text-sm">{t.mandarat.noGoals}</p>
+  1279→  1279→        </div>
+  1280→  1280→      );
+  1281→  1281→    }
+  1282→  1282→
+  1283→  1283→    return (
+  1284→  1284→      <div className="space-y-0.5">
+  1285→  1285→        <TreeNodeItem
+  1286→  1286→          nodeId={rootGoal.id}
+  1287→  1287→          depth={0}
+  1288→  1288→          selectedNodeId={selectedNodeId}
+  1289→  1289→          onSelect={handleSelectNode}
+  1290→  1290→          onAddChild={handleAddChild}
+  1291→  1291→          t={t}
+  1292→  1292→        />
+  1293→  1293→      </div>
+  1294→  1294→    );
+  1295→  1295→  };
+  1296→  1296→
+  1297→  1297→  // =====================================================================
+  1298→  1298→  // RENDER — List View
+  1299→  1299→  // =====================================================================
+  1300→  1300→
+  1301→  1301→  const renderListView = () => {
+  1302→  1302→    if (projectNodes.length === 0) {
+  1303→  1303→      return (
+  1304→  1304→        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+  1305→  1305→          <List className="size-12 mb-4 opacity-30" />
+  1306→  1306→          <p className="text-sm">{t.mandarat.noGoals}</p>
+  1307→  1307→        </div>
+  1308→  1308→      );
+  1309→  1309→    }
+  1310→  1310→
+  1311→  1311→    return (
+  1312→  1312→      <div className="space-y-1">
+  1313→  1313→        {projectNodes.map((node, idx) => (
+  1314→  1314→          <motion.div
+  1315→  1315→            key={node.id}
+  1316→  1316→            initial={{ opacity: 0, y: 4 }}
+  1317→  1317→            animate={{ opacity: 1, y: 0 }}
+  1318→  1318→            transition={{ duration: 0.15, delay: idx * 0.02 }}
+  1319→  1319→          >
+  1320→  1320→            <button
+  1321→  1321→              onClick={() => handleSelectNode(node.id)}
+  1322→  1322→              className={`w-full flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 p-3 rounded-lg border text-left transition-colors hover:bg-muted/60 ${
+  1323→  1323→                selectedNodeId === node.id
+  1324→  1324→                  ? 'border-primary bg-primary/5'
+  1325→  1325→                  : 'border-border bg-card'
+  1326→  1326→              }`}
+  1327→  1327→            >
+  1328→  1328→              {/* Breadcrumb */}
+  1329→  1329→              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground truncate sm:w-40 shrink-0">
+  1330→  1330→                {node.parentId && (
+  1331→  1331→                  <span className="truncate">
+  1332→  1332→                    {truncate(getBreadcrumb(node.parentId, nodes), 25)}
+  1333→  1333→                  </span>
+  1334→  1334→                )}
+  1335→  1335→                {!node.parentId && (
+  1336→  1336→                  <span className="text-foreground font-medium truncate">
+  1337→  1337→                    {truncate(node.title, 25)}
+  1338→  1338→                  </span>
+  1339→  1339→                )}
+  1340→  1340→              </div>
+  1341→  1341→
+  1342→  1342→              {/* Main info */}
+  1343→  1343→              <div className="flex items-center gap-2 flex-1 min-w-0">
+  1344→  1344→                {typeIcon(node.type)}
+  1345→  1345→                <span className="text-sm truncate flex-1">
+  1346→  1346→                  {node.title || '(제목 없음)'}
+  1347→  1347→                </span>
+  1348→  1348→                <Badge variant="outline" className="text-[10px] h-5 px-1.5 shrink-0 hidden sm:inline-flex">
+  1349→  1349→                  {typeLabel(node.type, t)}
+  1350→  1350→                </Badge>
+  1351→  1351→                <StatusBadge status={node.status} t={t} />
+  1352→  1352→              </div>
+  1353→  1353→
+  1354→  1354→              {/* Progress */}
+  1355→  1355→              <div className="flex items-center gap-2 shrink-0 w-full sm:w-28">
+  1356→  1356→                <Progress value={node.progress} className="h-1.5 flex-1" />
+  1357→  1357→                <span className="text-xs text-muted-foreground font-mono w-8 text-right">
+  1358→  1358→                  {node.progress}%
+  1359→  1359→                </span>
+  1360→  1360→              </div>
+  1361→  1361→            </button>
+  1362→  1362→          </motion.div>
+  1363→  1363→        ))}
+  1364→  1364→      </div>
+  1365→  1365→    );
+  1366→  1366→  };
+  1367→  1367→
+  1368→  1368→  // =====================================================================
+  1369→  1369→  // RENDER — Unsorted Section
+  1370→  1370→  // =====================================================================
+  1371→  1371→
+  1372→  1372→  const renderUnsortedSection = () => {
+  1373→  1373→    if (unsortedNodes.length === 0) return null;
+  1374→  1374→
+  1375→  1375→    return (
+  1376→  1376→      <div className="mt-6">
+  1377→  1377→        <Separator className="mb-4" />
+  1378→  1378→        <div className="flex items-center gap-2 mb-3">
+  1379→  1379→          <Inbox className="size-4 text-muted-foreground" />
+  1380→  1380→          <h3 className="text-sm font-semibold">{t.mandarat.unsortedItems}</h3>
+  1381→  1381→          <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
+  1382→  1382→            {unsortedNodes.length}
+  1383→  1383→          </Badge>
+  1384→  1384→        </div>
+  1385→  1385→        <div className="space-y-1.5 max-h-60 overflow-y-auto">
+  1386→  1386→          {unsortedNodes.map((node) => (
+  1387→  1387→            <div
+  1388→  1388→              key={node.id}
+  1389→  1389→              className="flex items-center gap-2 p-2.5 rounded-lg border bg-card"
+  1390→  1390→            >
+  1391→  1391→              <div className="flex-1 min-w-0">
+  1392→  1392→                <div className="flex items-center gap-1.5">
+  1393→  1393→                  {typeIcon(node.type)}
+  1394→  1394→                  <span className="text-sm truncate">{node.title}</span>
+  1395→  1395→                  <StatusBadge status={node.status} t={t} />
+  1396→  1396→                </div>
+  1397→  1397→              </div>
+  1398→  1398→              {selectedProjectId && (
+  1399→  1399→                <Button
+  1400→  1400→                  variant="outline"
+  1401→  1401→                  size="sm"
+  1402→  1402→                  className="shrink-0 text-xs h-7"
+  1403→  1403→                  onClick={() => handleMergeToProject(node.id)}
+  1404→  1404→                >
+  1405→  1405→                  <Plus className="mr-1 size-3" />
+  1406→  1406→                  {t.mandarat.mergeToProject}
+  1407→  1407→                </Button>
+  1408→  1408→              )}
+  1409→  1409→            </div>
+  1410→  1410→          ))}
+  1411→  1411→        </div>
+  1412→  1412→      </div>
+  1413→  1413→    );
+  1414→  1414→  };
+  1415→  1415→
+  1416→  1416→  // =====================================================================
+  1417→  1417→  // MAIN RENDER
+  1418→  1418→  // =====================================================================
+  1419→  1419→
+  1420→  1420→  return (
+  1421→  1421→    <div className="flex flex-col gap-4 h-full">
+  1422→  1422→      {/* Top bar */}
+  1423→  1423→      {renderTopBar()}
+  1424→  1424→
+  1425→  1425→      {/* Main content */}
+  1426→  1426→      <div
+  1427→  1427→        className={`flex gap-4 flex-1 min-h-0 ${
+  1428→  1428→          isMobile ? 'flex-col' : 'flex-row'
+  1429→  1429→        }`}
+  1430→  1430→      >
+  1431→  1431→        {/* Left: Grid / Tree / List */}
+  1432→  1432→        <div className="flex-1 min-w-0">
+  1433→  1433→          <ScrollArea className="h-full max-h-[calc(100vh-200px)] md:max-h-[calc(100vh-200px)]">
+  1434→  1434→            <div className="p-1">
+  1435→  1435→              {viewMode === 'grid' && renderGridView()}
+  1436→  1436→              {viewMode === 'tree' && renderTreeView()}
+  1437→  1437→              {viewMode === 'list' && renderListView()}
+  1438→  1438→
+  1439→  1439→              {/* Unsorted section (shown below all views) */}
+  1440→  1440→              {renderUnsortedSection()}
+  1441→  1441→            </div>
+  1442→  1442→          </ScrollArea>
+  1443→  1443→        </div>
+  1444→  1444→
+  1445→  1445→        {/* Right: Detail panel (desktop always, mobile when node selected) */}
+  1446→  1446→        <AnimatePresence>
+  1447→  1447→          {selectedNode && (
+  1448→  1448→            <div
+  1449→  1449→              className={`shrink-0 ${
+  1450→  1450→                isMobile
+  1451→  1451→                  ? 'w-full'
+  1452→  1452→                  : 'w-[320px] lg:w-[340px]'
+  1453→  1453→              }`}
+  1454→  1454→            >
+  1455→  1455→              <DetailPanel
+  1456→  1456→                key={selectedNodeId}
+  1457→  1457→                nodeId={selectedNodeId!}
+  1458→  1458→                onClose={() => setSelectedNode(null)}
+  1459→  1459→                onDelete={handleDeleteNode}
+  1460→  1460→                onExpandToGrid={handleExpandToGrid}
+  1461→  1461→                onAddChild={() => {
+  1462→  1462→                  if (selectedNodeId) handleAddChild(selectedNodeId);
+  1463→  1463→                }}
+  1464→  1464→                onAiGenerate={handleAiGenerate}
+  1465→  1465→                aiGenerating={aiGenerating}
+  1466→  1466→                t={t}
+  1467→  1467→              />
+  1468→  1468→            </div>
+  1469→  1469→          )}
+  1470→  1470→        </AnimatePresence>
+  1471→  1471→      </div>
+  1472→  1472→    </div>
+  1473→  1473→  );
+  1474→  1474→}

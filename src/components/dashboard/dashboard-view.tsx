@@ -8,6 +8,7 @@ import {
   useProjectStore,
   useNavStore,
   usePrefStore,
+  useLogStore,
 } from '@/lib/store';
 import { useLocale } from '@/hooks/use-locale';
 import { createNode, formatTime, isSameDay } from '@/lib/services';
@@ -22,6 +23,7 @@ import {
   Inbox,
   Send,
   MessageCircle,
+ Activity,
 } from 'lucide-react';
 import {
   Card,
@@ -55,6 +57,24 @@ export function DashboardView() {
   const setView = useNavStore((s) => s.setView);
   const setSelectedProject = useNavStore((s) => s.setSelectedProject);
   const language = usePrefStore((s) => s.language);
+  const getRecentLogs = useLogStore((s) => s.getRecentLogs);
+  const allNodesMap = useNodeStore((s) => s.nodes);
+
+  const recentLogs = useMemo(() => getRecentLogs(5), [getRecentLogs, allNodes]);
+
+  const stats = useMemo(() => {
+    const all = Object.values(allNodes);
+    const total = all.filter((n) => n.aiMeta?.status !== 'draft').length;
+    const completed = all.filter((n) => n.status === 'completed').length;
+    const inProgress = all.filter((n) => n.status === 'in_progress').length;
+    const drafts = all.filter((n) => n.aiMeta?.status === 'draft').length;
+    return { total, completed, inProgress, drafts };
+  }, [allNodes]);
+
+  const statusLabel = (status: string) => {
+    const key = status as keyof typeof t.status;
+    return t.status[key] ?? status;
+  };
 
   const today = new Date();
 
@@ -363,6 +383,69 @@ export function DashboardView() {
         {/* Unsorted */}
         <motion.div
           custom={3}
+          variants={cardVariants}
+          initial="hidden"
+          animate="visible"
+          className="md:col-span-2 xl:col-span-3"
+        >
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                  <Activity className="size-4" />
+                  {t.dashboard.recentActivity}
+                </CardTitle>
+                <button
+                  className="text-[10px] text-primary hover:underline"
+                  onClick={() => setView('log')}
+                >
+                  {t.log.title} →
+                </button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div className="rounded-lg bg-primary/5 p-3 text-center">
+                  <p className="text-xl font-bold text-primary">{stats.total}</p>
+                  <p className="text-[10px] text-muted-foreground">Total Nodes</p>
+                </div>
+                <div className="rounded-lg bg-emerald-500/10 p-3 text-center">
+                  <p className="text-xl font-bold text-emerald-600">{stats.completed}</p>
+                  <p className="text-[10px] text-muted-foreground">{t.status.completed}</p>
+                </div>
+                <div className="rounded-lg bg-amber-500/10 p-3 text-center">
+                  <p className="text-xl font-bold text-amber-600">{stats.inProgress}</p>
+                  <p className="text-[10px] text-muted-foreground">{t.status.in_progress}</p>
+                </div>
+                <div className="rounded-lg bg-blue-500/10 p-3 text-center">
+                  <p className="text-xl font-bold text-blue-600">{stats.drafts}</p>
+                  <p className="text-[10px] text-muted-foreground">{t.nav.drafts}</p>
+                </div>
+              </div>
+              {recentLogs.length > 0 && (
+                <div className="space-y-1.5">
+                  {recentLogs.slice(0, 3).map((log) => {
+                    const node = allNodesMap[log.nodeId];
+                    return (
+                      <div key={log.id} className="flex items-center gap-2 text-xs">
+                        <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0">
+                          {t.log[log.action as keyof typeof t.log] ?? log.action}
+                        </Badge>
+                        <span className="truncate text-muted-foreground">
+                          {node?.title?.substring(0, 20) ?? '...'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* Unsorted */}
+        <motion.div
+          custom={4}
           variants={cardVariants}
           initial="hidden"
           animate="visible"

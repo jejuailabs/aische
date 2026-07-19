@@ -11,6 +11,8 @@ import {
   LayoutGrid,
   Settings,
   FileText,
+  ScrollText,
+  Shield,
 } from 'lucide-react';
 import {
   Sheet,
@@ -27,6 +29,8 @@ import { TodoView } from '@/components/todo/todo-view';
 import { DashboardView } from '@/components/dashboard/dashboard-view';
 import { MandaratView } from '@/components/mandarat/mandarat-view';
 import { SettingsView } from '@/components/settings/settings-view';
+import { AdminView } from '@/components/admin/admin-view';
+import { ActivityLogView } from '@/components/log/activity-log-view';
 
 const tabs: { view: AppView; icon: typeof LayoutDashboard; labelKey: 'dashboard' | 'calendar' | 'todo' | 'mandarat' | 'drafts' | 'settings' }[] = [
   { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
@@ -46,6 +50,10 @@ function ViewSwitcher({ view }: { view: AppView }) {
       return <MandaratView />;
     case 'drafts':
       return <DraftInbox />;
+    case 'admin':
+      return <AdminView />;
+    case 'log':
+      return <ActivityLogView />;
     case 'settings':
       return <SettingsView />;
     default:
@@ -131,6 +139,26 @@ export function MobileShell() {
                 >
                   <Settings className="size-5 text-muted-foreground" />
                   {t.nav.settings}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => {
+                    setMobileTab('log');
+                  }}
+                >
+                  <ScrollText className="size-5 text-muted-foreground" />
+                  {t.log.title}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => {
+                    setMobileTab('admin');
+                  }}
+                >
+                  <Shield className="size-5 text-muted-foreground" />
+                  {t.admin.title}
                 </Button>
               </div>
             </SheetContent>

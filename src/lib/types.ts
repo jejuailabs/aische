@@ -182,5 +182,5 @@ export interface CalendarDay {
 }
 
 // --- 뷰 타입 ---
-export type AppView = "calendar" | "todo" | "mandarat" | "dashboard" | "drafts" | "settings";
+export type AppView = "calendar" | "todo" | "mandarat" | "dashboard" | "drafts" | "settings" | "admin" | "log";
 export type CalendarSubView = "monthly" | "daily";
