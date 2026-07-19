@@ -1,0 +1,25 @@
+rules_version = '2';
+
+// GoalFlow Firestore 보안 규칙
+// 구조: users/{uid}/nodes, categories, projects, logs
+// 원칙: 자기 데이터만 읽기/쓰기 가능 (인증 필수)
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 유저 프로필
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      // 유저 하위 모든 서브컬렉션 (nodes, categories, projects, logs)
+      match /{subcollection}/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // 기본: 나머지는 전부 거부
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

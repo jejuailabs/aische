@@ -13,8 +13,11 @@ import {
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { User, Bell, Palette, Link2, Shield } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { User, Bell, Palette, Link2, Shield, LogOut } from 'lucide-react';
 import { NotificationSettings } from './notification-settings';
+import { signOut } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 import type { Language, HomeMode } from '@/lib/types';
 
 export function SettingsView() {
@@ -136,6 +139,16 @@ export function SettingsView() {
                       <span className="text-xs font-mono text-muted-foreground">{user.uid}</span>
                     </div>
                   </div>
+                  <Separator />
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="w-full gap-2"
+                    onClick={() => signOut(auth)}
+                  >
+                    <LogOut className="size-4" />
+                    로그아웃
+                  </Button>
                 </>
               ) : (
                 <p className="text-sm text-muted-foreground">{t.common.noData}</p>
@@ -249,5 +262,4 @@ function IntegrationsSection() {
 }
 
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';

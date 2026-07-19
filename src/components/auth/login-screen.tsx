@@ -1,33 +1,35 @@
 'use client';
 
+import { useState } from 'react';
+import { signInWithPopup } from 'firebase/auth';
+import { auth, googleProvider } from '@/lib/firebase';
 import { motion } from 'framer-motion';
-import { Chrome, Leaf } from 'lucide-react';
+import { Chrome, Leaf, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { useAuthStore } from '@/lib/store';
 import { useLocale } from '@/hooks/use-locale';
 
 export function LoginScreen() {
   const { t } = useLocale();
-  const login = useAuthStore((s) => s.login);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleLogin = () => {
-    login({
-      uid: 'demo-uid',
-      displayName: '홍길동',
-      email: 'hong@example.com',
-      photoURL: null,
-      role: 'user',
-      preferences: {
-        theme: 'light',
-        language: 'ko',
-        homeMode: 'dashboard',
-        avatarAssetRef: '',
-        backgroundAssetRef: '',
-        pcWorkspaceLayout: [],
-      },
-      createdAt: new Date(),
-    });
+  const handleLogin = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      // onAuthStateChanged in AuthProvider handles the rest
+    } catch (err: any) {
+      console.error('Google 로그인 실패:', err);
+      // popup 닫기는 오류 아닌 정상 케이스
+      if (err?.code === 'auth/popup-closed-by-user') {
+        setLoading(false);
+        return;
+      }
+      setError(t.auth.loginFailed ?? '로그인에 실패했습니다. 다시 시도해주세요.');
+      setLoading(false);
+    }
   };
 
   return (
@@ -79,12 +81,22 @@ export function LoginScreen() {
             >
               <Button
                 onClick={handleLogin}
+                disabled={loading}
                 className="w-full gap-2 bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-lg shadow-teal-500/25 hover:from-teal-500 hover:to-emerald-500 hover:shadow-teal-500/30"
                 size="lg"
               >
-                <Chrome className="size-5" />
-                {t.auth.signInWithGoogle}
+                {loading ? (
+                  <Loader2 className="size-5 animate-spin" />
+                ) : (
+                  <Chrome className="size-5" />
+                )}
+                {loading ? '로그인 중...' : t.auth.signInWithGoogle}
               </Button>
+              {error && (
+                <p className="mt-2 text-center text-sm text-destructive">
+                  {error}
+                </p>
+              )}
             </motion.div>
           </CardContent>
         </Card>

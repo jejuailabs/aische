@@ -22,6 +22,8 @@ const ko = {
     welcomeBack: "다시 오셨군요!",
     welcome: "환영합니다!",
     subtitle: "목표를 구조화하고, 일정과 투두를 하나로 관리하세요",
+    loginFailed: "로그인에 실패했습니다. 다시 시도해주세요.",
+    loggingOut: "로그아웃 중...",
   },
   nav: {
     calendar: "캘린더",
@@ -293,6 +295,8 @@ const en = {
     welcomeBack: "Welcome back!",
     welcome: "Welcome!",
     subtitle: "Structure your goals, manage schedules and todos in one place",
+    loginFailed: "Login failed. Please try again.",
+    loggingOut: "Logging out...",
   },
   nav: {
     calendar: "Calendar",

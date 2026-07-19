@@ -25,6 +25,34 @@ import {
 } from 'date-fns';
 import type { Node } from '@/lib/types';
 
+// Month cells render a miniature day timeline, so the cell height has to be
+// large enough for a short event to stay legible: at 14px/hour a 1-hour block
+// is 14px tall, which fits a 10px label.
+const DAY_START_HOUR = 6;
+const DAY_END_HOUR = 22;
+const HOUR_PX = 14;
+const TIMELINE_PX = (DAY_END_HOUR - DAY_START_HOUR) * HOUR_PX;
+const MIN_BAR_PX = 14;
+const GUIDE_HOURS = [10, 14, 18];
+
+/** Spread overlapping events across side-by-side lanes so none are hidden. */
+function assignLanes(events: Node[]) {
+  const sorted = events
+    .filter((e) => e.schedule)
+    .sort((a, b) => a.schedule!.startAt.getTime() - b.schedule!.startAt.getTime());
+
+  const laneEndsAt: number[] = [];
+  const placed = sorted.map((evt) => {
+    const start = evt.schedule!.startAt.getTime();
+    let lane = laneEndsAt.findIndex((endsAt) => endsAt <= start);
+    if (lane === -1) lane = laneEndsAt.length;
+    laneEndsAt[lane] = evt.schedule!.endAt.getTime();
+    return { evt, lane };
+  });
+
+  return { placed, laneCount: Math.max(laneEndsAt.length, 1) };
+}
+
 export function CalendarView() {
   const calendarSubView = useNavStore((s) => s.calendarSubView);
   const setCalendarSubView = useNavStore((s) => s.setCalendarSubView);
@@ -75,16 +103,20 @@ export function CalendarView() {
     });
   };
 
-  // Event bar positioning helper (06:00-22:00 = 16 hours range)
-  const eventBarStyle = (node: Node) => {
+  // Event bar geometry in px, so a bar's size tracks its real duration
+  // instead of collapsing with the cell.
+  const eventBarStyle = (node: Node, lane: number, laneCount: number) => {
     if (!node.schedule) return {};
-    const startH = node.schedule.startAt.getHours() + node.schedule.startAt.getMinutes() / 60;
-    const endH = node.schedule.endAt.getHours() + node.schedule.endAt.getMinutes() / 60;
-    const top = ((Math.max(startH, 6) - 6) / 16) * 100;
-    const height = ((Math.min(endH, 22) - Math.max(startH, 6)) / 16) * 100;
+    const rawStart = node.schedule.startAt.getHours() + node.schedule.startAt.getMinutes() / 60;
+    const rawEnd = node.schedule.endAt.getHours() + node.schedule.endAt.getMinutes() / 60;
+    const startH = Math.min(Math.max(rawStart, DAY_START_HOUR), DAY_END_HOUR);
+    const endH = Math.min(Math.max(rawEnd, startH), DAY_END_HOUR);
+    const laneWidth = 100 / laneCount;
     return {
-      top: `${top}%`,
-      height: `${Math.max(height, 4)}%`,
+      top: `${(startH - DAY_START_HOUR) * HOUR_PX}px`,
+      height: `${Math.max((endH - startH) * HOUR_PX, MIN_BAR_PX)}px`,
+      left: `${lane * laneWidth}%`,
+      width: `calc(${laneWidth}% - 2px)`,
     };
   };
 
@@ -174,9 +206,7 @@ export function CalendarView() {
               day.getMonth() === currentMonth.getMonth();
             const isToday = isSameDay(day, new Date());
             const events = getEventsForDay(day);
-            const maxVisible = 3;
-            const visibleEvents = events.slice(0, maxVisible);
-            const moreCount = events.length - maxVisible;
+            const { placed, laneCount } = assignLanes(events);
 
             return (
               <button
@@ -186,7 +216,7 @@ export function CalendarView() {
                   setCalendarSubView('daily');
                 }}
                 className={cn(
-                  'relative h-24 border-b border-r p-1 text-left transition-colors hover:bg-muted/50 last:border-r-0',
+                  'relative border-b border-r p-1 text-left align-top transition-colors hover:bg-muted/50 last:border-r-0',
                   !isCurrentMonth && 'text-muted-foreground/50'
                 )}
               >
@@ -199,17 +229,29 @@ export function CalendarView() {
                 >
                   {format(day, 'd')}
                 </span>
-                {/* Mini vertical timeline for events */}
-                <div className="relative mt-0.5 h-[calc(100%-24px)] w-full">
-                  {visibleEvents.map((evt) => (
+                {/* Mini vertical timeline for events (06:00-22:00) */}
+                <div
+                  className="relative mt-0.5 w-full"
+                  style={{ height: `${TIMELINE_PX}px` }}
+                >
+                  {/* Hour guides make an event's time position readable at a glance */}
+                  {GUIDE_HOURS.map((hour) => (
+                    <div
+                      key={hour}
+                      className="absolute inset-x-0 border-t border-dashed border-border/40"
+                      style={{ top: `${(hour - DAY_START_HOUR) * HOUR_PX}px` }}
+                    />
+                  ))}
+                  {placed.map(({ evt, lane }) => (
                     <div
                       key={evt.id}
+                      title={evt.title}
                       className={cn(
-                        'absolute left-0 right-0.5 overflow-hidden rounded-sm px-1 text-[9px] leading-tight text-white',
+                        'absolute overflow-hidden rounded-sm px-1 text-[10px] leading-[14px] text-white',
                         evt.status === 'completed' && 'opacity-50 line-through'
                       )}
                       style={{
-                        ...eventBarStyle(evt),
+                        ...eventBarStyle(evt, lane, laneCount),
                         backgroundColor: getColor(
                           evt.schedule!.category,
                           document.documentElement.classList.contains('dark')
@@ -219,11 +261,6 @@ export function CalendarView() {
                       {evt.title}
                     </div>
                   ))}
-                  {moreCount > 0 && (
-                    <div className="absolute bottom-0.5 left-0 text-[9px] font-medium text-muted-foreground">
-                      +{moreCount} {t.calendar.more}
-                    </div>
-                  )}
                 </div>
               </button>
             );

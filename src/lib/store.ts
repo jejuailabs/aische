@@ -1,5 +1,6 @@
 // ==========================================
 // Zustand 상태관리 — 통합 스토어
+// (Firestore 동기화 포함)
 // ==========================================
 
 import { create } from "zustand";
@@ -18,6 +19,19 @@ import type {
   LogAction,
 } from "@/lib/types";
 import { generateId } from "@/lib/services";
+import * as fs from "@/lib/firestore";
+
+// ─── Firestore 쓰기 헬퍼 (fire-and-forget, 에러 콘솔) ───
+function getUid(): string | null {
+  return useAuthStore.getState().user?.uid ?? null;
+}
+
+/** Firestore에 비동기 쓰기. 실패 시 콘솔 경고만 (낙관적 업데이트 패턴) */
+function fsWrite(fn: (uid: string) => Promise<void>) {
+  const uid = getUid();
+  if (!uid) return;
+  fn(uid).catch((e) => console.warn("[store→firestore]", e));
+}
 
 // --- Auth Store ---
 interface AuthState {
@@ -91,6 +105,7 @@ export const useLogStore = create<LogState>((set, get) => ({
       timestamp: (entry as any).timestamp ?? new Date(),
     };
     set((s) => ({ logs: { ...s.logs, [log.id]: log } }));
+    fsWrite((uid) => fs.saveLog(uid, log));
   },
   getLogsForNode: (nodeId) =>
     Object.values(get().logs)
@@ -133,8 +148,10 @@ export const useNodeStore = create<NodeState>((set, get) => ({
     nodes.forEach((n) => { map[n.id] = n; });
     set({ nodes: map });
   },
-  addNode: (node) =>
-    set((s) => ({ nodes: { ...s.nodes, [node.id]: node } })),
+  addNode: (node) => {
+    set((s) => ({ nodes: { ...s.nodes, [node.id]: node } }));
+    fsWrite((uid) => fs.saveNode(uid, node));
+  },
   addNodeWithLog: (node) => {
     get().addNode(node);
     useLogStore.getState().addLog({
@@ -146,7 +163,7 @@ export const useNodeStore = create<NodeState>((set, get) => ({
       actor: useAuthStore.getState().user?.uid ?? "anonymous",
     });
   },
-  updateNode: (id, updates) =>
+  updateNode: (id, updates) => {
     set((s) => ({
       nodes: {
         ...s.nodes,
@@ -154,7 +171,9 @@ export const useNodeStore = create<NodeState>((set, get) => ({
           ? { ...s.nodes[id], ...updates, updatedAt: new Date() }
           : s.nodes[id],
       },
-    })),
+    }));
+    fsWrite((uid) => fs.updateNodeFields(uid, id, updates));
+  },
   updateNodeWithLog: (id, updates) => {
     const before = get().nodes[id] ? { ...get().nodes[id] } : null;
     get().updateNode(id, updates);
@@ -168,11 +187,13 @@ export const useNodeStore = create<NodeState>((set, get) => ({
       actor: useAuthStore.getState().user?.uid ?? "anonymous",
     });
   },
-  removeNode: (id) =>
+  removeNode: (id) => {
     set((s) => {
       const { [id]: _, ...rest } = s.nodes;
       return { nodes: rest };
-    }),
+    });
+    fsWrite((uid) => fs.deleteNode(uid, id));
+  },
   removeNodeWithLog: (id) => {
     const node = get().nodes[id];
     if (!node) return;
@@ -309,9 +330,11 @@ export const useCategoryStore = create<CategoryState>((set, get) => ({
     cats.forEach((c) => { map[c.id] = c; });
     set({ categories: map });
   },
-  addCategory: (cat) =>
-    set((s) => ({ categories: { ...s.categories, [cat.id]: cat } })),
-  updateCategory: (id, updates) =>
+  addCategory: (cat) => {
+    set((s) => ({ categories: { ...s.categories, [cat.id]: cat } }));
+    fsWrite((uid) => fs.saveCategory(uid, cat));
+  },
+  updateCategory: (id, updates) => {
     set((s) => ({
       categories: {
         ...s.categories,
@@ -319,12 +342,18 @@ export const useCategoryStore = create<CategoryState>((set, get) => ({
           ? { ...s.categories[id], ...updates }
           : s.categories[id],
       },
-    })),
-  removeCategory: (id) =>
+    }));
+    // 머지된 결과를 Firestore에 저장
+    const merged = useCategoryStore.getState().categories[id];
+    if (merged) fsWrite((uid) => fs.saveCategory(uid, merged));
+  },
+  removeCategory: (id) => {
     set((s) => {
       const { [id]: _, ...rest } = s.categories;
       return { categories: rest };
-    }),
+    });
+    fsWrite((uid) => fs.deleteCategory(uid, id));
+  },
   getById: (id) => get().categories[id],
   getColor: (id, isDark) => {
     const cat = get().categories[id];
@@ -359,12 +388,17 @@ interface ProjectSummaryState {
 export const useProjectStore = create<ProjectSummaryState>((set, get) => ({
   projects: [],
   setProjects: (p) => set({ projects: p }),
-  addProject: (p) =>
-    set((s) => ({ projects: [...s.projects, p] })),
-  updateProject: (id, updates) =>
+  addProject: (p) => {
+    set((s) => ({ projects: [...s.projects, p] }));
+    fsWrite((uid) => fs.saveProject(uid, p));
+  },
+  updateProject: (id, updates) => {
     set((s) => ({
       projects: s.projects.map((p) =>
         p.id === id ? { ...p, ...updates, updatedAt: new Date() } : p
       ),
-    })),
+    }));
+    const merged = useProjectStore.getState().projects.find((p) => p.id === id);
+    if (merged) fsWrite((uid) => fs.saveProject(uid, merged));
+  },
 }));
