@@ -11,6 +11,7 @@ import { generateDemoNodes, generateDemoCategories } from '@/lib/services';
 import { LoginScreen } from '@/components/auth/login-screen';
 import { PcDashboard } from '@/components/layout/pc-dashboard';
 import { MobileShell } from '@/components/layout/mobile-shell';
+import { ChatPanel } from '@/components/chat/chat-panel';
 import { Toaster } from '@/components/ui/sonner';
 
 export default function Home() {
@@ -54,6 +55,7 @@ export default function Home() {
         <MobileShell />
       </div>
       <Toaster />
+      <ChatPanel />
     </>
   );
 }

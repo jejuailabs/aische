@@ -10,6 +10,7 @@ import {
   MoreHorizontal,
   LayoutGrid,
   Settings,
+  FileText,
 } from 'lucide-react';
 import {
   Sheet,
@@ -20,13 +21,14 @@ import {
 } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import type { AppView } from '@/lib/types';
+import { DraftInbox } from '@/components/chat/draft-inbox';
 import { CalendarView } from '@/components/calendar/calendar-view';
 import { TodoView } from '@/components/todo/todo-view';
 import { DashboardView } from '@/components/dashboard/dashboard-view';
 import { MandaratView } from '@/components/mandarat/mandarat-view';
 import { SettingsView } from '@/components/settings/settings-view';
 
-const tabs: { view: AppView; icon: typeof LayoutDashboard; labelKey: 'dashboard' | 'calendar' | 'todo' | 'mandarat' | 'settings' }[] = [
+const tabs: { view: AppView; icon: typeof LayoutDashboard; labelKey: 'dashboard' | 'calendar' | 'todo' | 'mandarat' | 'drafts' | 'settings' }[] = [
   { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
   { view: 'calendar', icon: CalendarDays, labelKey: 'calendar' },
   { view: 'todo', icon: CheckSquare, labelKey: 'todo' },
@@ -42,6 +44,8 @@ function ViewSwitcher({ view }: { view: AppView }) {
       return <TodoView />;
     case 'mandarat':
       return <MandaratView />;
+    case 'drafts':
+      return <DraftInbox />;
     case 'settings':
       return <SettingsView />;
     default:
@@ -107,6 +111,16 @@ export function MobileShell() {
                 >
                   <LayoutGrid className="size-5 text-muted-foreground" />
                   {t.nav.mandarat}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => {
+                    setMobileTab('drafts');
+                  }}
+                >
+                  <FileText className="size-5 text-muted-foreground" />
+                  {t.nav.drafts}
                 </Button>
                 <Button
                   variant="ghost"

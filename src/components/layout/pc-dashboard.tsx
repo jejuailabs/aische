@@ -15,6 +15,7 @@ import {
   LayoutDashboard,
   Settings,
   Inbox,
+  FileText,
 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -28,13 +29,15 @@ import { TodoView } from '@/components/todo/todo-view';
 import { DashboardView } from '@/components/dashboard/dashboard-view';
 import { MandaratView } from '@/components/mandarat/mandarat-view';
 import { SettingsView } from '@/components/settings/settings-view';
+import { DraftInbox } from '@/components/chat/draft-inbox';
 import { usePrefStore } from '@/lib/store';
 
-const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'settings' }[] = [
+const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'drafts' | 'settings' }[] = [
+  { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
   { view: 'calendar', icon: CalendarDays, labelKey: 'calendar' },
   { view: 'todo', icon: CheckSquare, labelKey: 'todo' },
   { view: 'mandarat', icon: LayoutGrid, labelKey: 'mandarat' },
-  { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
+  { view: 'drafts', icon: FileText, labelKey: 'drafts' },
 ];
 
 function ViewSwitcher({ view }: { view: AppView }) {
@@ -47,6 +50,8 @@ function ViewSwitcher({ view }: { view: AppView }) {
       return <TodoView />;
     case 'mandarat':
       return <MandaratView />;
+    case 'drafts':
+      return <DraftInbox />;
     case 'settings':
       return <SettingsView />;
     default:
@@ -69,6 +74,7 @@ export function PcDashboard() {
     calendar: t.nav.calendar,
     todo: t.nav.todo,
     mandarat: t.nav.mandarat,
+    drafts: t.nav.drafts,
     settings: t.nav.settings,
   };
 
