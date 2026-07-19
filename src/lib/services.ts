@@ -210,8 +210,8 @@ export function generateDemoNodes(): Node[] {
     id: "evt-10", workspaceId: ws, type: "calendar_event",
     title: "생일 파티", description: "지인 생일 축하 모임",
     status: "completed",
-    schedule: makeDate(-7),
-    completedAt: makeDate(-7),
+    schedule: makeSchedule(-7, 18, 21, "cat-personal", false, "레스토랑", []),
+    completedAt: makeDate(-7, 21),
   }));
 
   // --- 투두 아이템 ---

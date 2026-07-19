@@ -49,10 +49,12 @@ function toDate(v: unknown): Date {
   return new Date();
 }
 
-/** Date → Firestore-safe plain object (Timestamp 등 직렬화) */
+/** Date → Firestore Timestamp (invalid/null → null) */
 function dateToTs(d: Date | null | undefined): Timestamp | null {
   if (!d) return null;
-  return Timestamp.fromDate(d instanceof Date ? d : new Date(d));
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return null;
+  return Timestamp.fromDate(date);
 }
 
 // ─── Node 변환 ───────────────────────────────────────
