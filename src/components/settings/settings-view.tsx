@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { User, Bell, Palette, Link2, Shield, LogOut } from 'lucide-react';
 import { NotificationSettings } from './notification-settings';
 import { signOut } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { getClientAuth } from '@/lib/firebase';
 import type { Language, HomeMode } from '@/lib/types';
 
 export function SettingsView() {
@@ -144,7 +144,7 @@ export function SettingsView() {
                     variant="destructive"
                     size="sm"
                     className="w-full gap-2"
-                    onClick={() => signOut(auth)}
+                    onClick={() => signOut(getClientAuth())}
                   >
                     <LogOut className="size-4" />
                     로그아웃

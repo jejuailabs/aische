@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { signInWithPopup } from 'firebase/auth';
-import { auth, googleProvider } from '@/lib/firebase';
+import { getClientAuth, googleProvider } from '@/lib/firebase';
 import { motion } from 'framer-motion';
 import { Chrome, Leaf, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,7 @@ export function LoginScreen() {
     setLoading(true);
     setError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithPopup(getClientAuth(), googleProvider);
       // onAuthStateChanged in AuthProvider handles the rest
     } catch (err: any) {
       console.error('Google 로그인 실패:', err);

@@ -28,7 +28,7 @@ import {
   limit as fsLimit,
   type DocumentData,
 } from "firebase/firestore";
-import { db } from "./firebase";
+import { getClientDb } from "./firebase";
 import type {
   Node,
   Category,
@@ -190,8 +190,8 @@ function firestoreToProfile(data: DocumentData): UserProfile {
 // API: UserProfile
 // ═══════════════════════════════════════════════════════
 
-const usersCol = () => collection(db, "users");
-const userDoc = (uid: string) => doc(db, "users", uid);
+const usersCol = () => collection(getClientDb(), "users");
+const userDoc = (uid: string) => doc(getClientDb(), "users", uid);
 
 export async function getOrCreateUser(
   uid: string,
@@ -214,9 +214,9 @@ export async function updateUserProfile(
 // API: Nodes
 // ═══════════════════════════════════════════════════════
 
-const nodesCol = (uid: string) => collection(db, "users", uid, "nodes");
+const nodesCol = (uid: string) => collection(getClientDb(), "users", uid, "nodes");
 const nodeDoc = (uid: string, id: string) =>
-  doc(db, "users", uid, "nodes", id);
+  doc(getClientDb(), "users", uid, "nodes", id);
 
 export async function fetchAllNodes(uid: string): Promise<Node[]> {
   const snap = await getDocs(nodesCol(uid));
@@ -257,7 +257,7 @@ export async function saveAllNodes(uid: string, nodes: Node[]): Promise<void> {
   // Firestore batch 는 500개 제한이므로 청크 분할
   const CHUNK = 450;
   for (let i = 0; i < nodes.length; i += CHUNK) {
-    const batch = writeBatch(db);
+    const batch = writeBatch(getClientDb());
     const chunk = nodes.slice(i, i + CHUNK);
     for (const node of chunk) {
       batch.set(nodeDoc(uid, node.id), nodeToFirestore(node));
@@ -270,9 +270,9 @@ export async function saveAllNodes(uid: string, nodes: Node[]): Promise<void> {
 // API: Categories
 // ═══════════════════════════════════════════════════════
 
-const catsCol = (uid: string) => collection(db, "users", uid, "categories");
+const catsCol = (uid: string) => collection(getClientDb(), "users", uid, "categories");
 const catDoc = (uid: string, id: string) =>
-  doc(db, "users", uid, "categories", id);
+  doc(getClientDb(), "users", uid, "categories", id);
 
 export async function fetchAllCategories(uid: string): Promise<Category[]> {
   const snap = await getDocs(catsCol(uid));
@@ -291,7 +291,7 @@ export async function saveAllCategories(
   uid: string,
   cats: Category[]
 ): Promise<void> {
-  const batch = writeBatch(db);
+  const batch = writeBatch(getClientDb());
   for (const cat of cats) {
     batch.set(catDoc(uid, cat.id), { ...cat });
   }
@@ -302,9 +302,9 @@ export async function saveAllCategories(
 // API: Projects
 // ═══════════════════════════════════════════════════════
 
-const projsCol = (uid: string) => collection(db, "users", uid, "projects");
+const projsCol = (uid: string) => collection(getClientDb(), "users", uid, "projects");
 const projDoc = (uid: string, id: string) =>
-  doc(db, "users", uid, "projects", id);
+  doc(getClientDb(), "users", uid, "projects", id);
 
 export async function fetchAllProjects(uid: string): Promise<ProjectSummary[]> {
   const snap = await getDocs(projsCol(uid));
@@ -328,7 +328,7 @@ export async function saveAllProjects(
   uid: string,
   projects: ProjectSummary[]
 ): Promise<void> {
-  const batch = writeBatch(db);
+  const batch = writeBatch(getClientDb());
   for (const p of projects) {
     batch.set(projDoc(uid, p.id), projectToFirestore(p));
   }
@@ -339,9 +339,9 @@ export async function saveAllProjects(
 // API: Logs
 // ═══════════════════════════════════════════════════════
 
-const logsCol = (uid: string) => collection(db, "users", uid, "logs");
+const logsCol = (uid: string) => collection(getClientDb(), "users", uid, "logs");
 const logDoc = (uid: string, id: string) =>
-  doc(db, "users", uid, "logs", id);
+  doc(getClientDb(), "users", uid, "logs", id);
 
 export async function fetchRecentLogs(
   uid: string,
@@ -360,7 +360,7 @@ export async function saveAllLogs(
   uid: string,
   logs: LogEntry[]
 ): Promise<void> {
-  const batch = writeBatch(db);
+  const batch = writeBatch(getClientDb());
   for (const log of logs) {
     batch.set(logDoc(uid, log.id), logToFirestore(log));
   }

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { getClientAuth } from '@/lib/firebase';
 import {
   useAuthStore,
   useNodeStore,
@@ -49,7 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setLoading(true);
 
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    const unsub = onAuthStateChanged(getClientAuth(), async (firebaseUser) => {
       if (!firebaseUser) {
         logout();
         setNodes([]);
