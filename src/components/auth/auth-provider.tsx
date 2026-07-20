@@ -13,6 +13,11 @@ import {
   usePersonStore,
   useOrgStore,
   useCaptureStore,
+  useTopicStore,
+  usePaymentMethodStore,
+  useFixedCostStore,
+  useDiaryStore,
+  useRelationshipStore,
 } from '@/lib/store';
 import {
   getOrCreateUser,
@@ -23,6 +28,11 @@ import {
   fetchAllPeople,
   fetchAllOrganizations,
   fetchRecentCaptures,
+  fetchAllTopics,
+  fetchAllPaymentMethods,
+  fetchAllFixedCosts,
+  fetchAllDiaryEntries,
+  fetchAllRelationshipLogs,
   saveAllCategories,
 } from '@/lib/firestore';
 import { generateDefaultCategories } from '@/lib/services';
@@ -45,6 +55,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const setPeople = usePersonStore((s) => s.setPeople);
   const setOrgs = useOrgStore((s) => s.setOrgs);
   const setCaptures = useCaptureStore((s) => s.setCaptures);
+  const setTopics = useTopicStore((s) => s.setTopics);
+  const setMethods = usePaymentMethodStore((s) => s.setMethods);
+  const setCosts = useFixedCostStore((s) => s.setCosts);
+  const setEntries = useDiaryStore((s) => s.setEntries);
+  const setLogs = useRelationshipStore((s) => s.setLogs);
 
   useEffect(() => {
     setLoading(true);
@@ -87,16 +102,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setHomeMode(profile.preferences.homeMode);
 
         // 2. Firestore 데이터 로드 (모든 정보 레이어)
-        const [nodes, categories, projects, logs, peopleList, orgList, captures] =
-          await Promise.all([
-            fetchAllNodes(firebaseUser.uid),
-            fetchAllCategories(firebaseUser.uid),
-            fetchAllProjects(firebaseUser.uid),
-            fetchRecentLogs(firebaseUser.uid),
-            fetchAllPeople(firebaseUser.uid),
-            fetchAllOrganizations(firebaseUser.uid),
-            fetchRecentCaptures(firebaseUser.uid),
-          ]);
+        const [
+          nodes,
+          categories,
+          projects,
+          logs,
+          peopleList,
+          orgList,
+          captures,
+          topicList,
+          methodList,
+          costList,
+          diaryList,
+          relLogList,
+        ] = await Promise.all([
+          fetchAllNodes(firebaseUser.uid),
+          fetchAllCategories(firebaseUser.uid),
+          fetchAllProjects(firebaseUser.uid),
+          fetchRecentLogs(firebaseUser.uid),
+          fetchAllPeople(firebaseUser.uid),
+          fetchAllOrganizations(firebaseUser.uid),
+          fetchRecentCaptures(firebaseUser.uid),
+          fetchAllTopics(firebaseUser.uid),
+          fetchAllPaymentMethods(firebaseUser.uid),
+          fetchAllFixedCosts(firebaseUser.uid),
+          fetchAllDiaryEntries(firebaseUser.uid),
+          fetchAllRelationshipLogs(firebaseUser.uid),
+        ]);
 
         // 카테고리가 없으면 기본 카테고리 생성 (AI 분류에 필요)
         let cats = categories;
@@ -112,6 +144,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setPeople(peopleList);
         setOrgs(orgList);
         setCaptures(captures);
+        setTopics(topicList);
+        setMethods(methodList);
+        setCosts(costList);
+        setEntries(diaryList);
+        setLogs(relLogList);
         logs.forEach((log) => addLog(log));
       } catch (err) {
         console.error('[AuthProvider] 데이터 로드 실패:', err);

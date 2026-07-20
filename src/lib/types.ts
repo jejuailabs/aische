@@ -156,6 +156,8 @@ export interface Node {
   // --- 관계 레이어 참조 ---
   personIds: string[];
   orgIds: string[];
+  /** 소속 주제 (아직 프로젝트로 승격되지 않은 묶음) */
+  topicId: string | null;
   /** 이 노드를 만들어낸 원본 입력 (CapturedInput.id) */
   capturedInputId: string | null;
 }
@@ -183,6 +185,120 @@ export interface Person {
   sourceInputIds: string[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * 주제(Topic) — 일정이 없는 애매한 입력이 모이는 곳.
+ *
+ * 미분류함이 "버려지는 곳"이라면 주제는 "쌓이는 곳"이다.
+ * 같은 주제로 내용이 모이다가 **날짜·할일 같은 행동이 붙는 순간**
+ * 프로젝트 승격을 제안한다. (메모만 쌓이는 건 아직 프로젝트가 아니다)
+ */
+export interface Topic {
+  id: string;
+  workspaceId: string;
+  label: string;
+  /** 같은 주제로 병합된 다른 표현들 ("제주도 이주", "이주 준비") */
+  aliases: string[];
+  /** 행동이 없는 메모들 */
+  notes: TopicNote[];
+  /** 이 주제에 붙은 일정·할일 노드 */
+  nodeIds: string[];
+  sourceInputIds: string[];
+  status: "collecting" | "promoted" | "archived";
+  /** 승격됐다면 그 프로젝트 id */
+  promotedProjectId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface TopicNote {
+  id: string;
+  text: string;
+  capturedInputId: string | null;
+  createdAt: Date;
+}
+
+/** 주제가 프로젝트로 승격될 조건을 만족했는지 */
+export function shouldPromoteTopic(topic: Topic): boolean {
+  if (topic.status !== "collecting") return false;
+  // 행동(일정·할일)이 하나라도 붙었고, 전체 항목이 2개 이상일 때
+  const total = topic.nodeIds.length + topic.notes.length;
+  return topic.nodeIds.length >= 1 && total >= 2;
+}
+
+// ==========================================
+// 일기 / 관계 로그
+// ==========================================
+//
+// 다른 레이어와 방향이 반대다.
+// 일정·고정비는 입력을 구조로 분해하고 원문을 버리지만,
+// 일기는 **원문이 곧 내용**이다. AI는 원문을 고치지 않고
+// 메타데이터를 옆에 붙이기만 한다.
+
+/** 전반적 기분 (-2 ~ +2) */
+export type Mood = -2 | -1 | 0 | 1 | 2;
+
+export const MOOD_LABEL: Record<Mood, string> = {
+  [-2]: "많이 힘듦",
+  [-1]: "가라앉음",
+  [0]: "보통",
+  [1]: "괜찮음",
+  [2]: "좋음",
+};
+
+export interface DiaryEntry {
+  id: string;
+  workspaceId: string;
+  /** 사용자가 쓴 원문. AI가 절대 덮어쓰지 않는다 */
+  rawText: string;
+  /** 음성 입력이면 전사된 원문 */
+  channel: "text" | "voice";
+  /** 일기가 가리키는 날짜 (작성일과 다를 수 있음 — "어제 있었던 일") */
+  entryDate: Date;
+
+  // ── 아래는 AI가 덧붙인 메타. 원문과 별개로 보관 ──
+  /** 목록에 보여줄 짧은 제목 */
+  title: string;
+  mood: Mood | null;
+  /** 세부 감정 태그 ("서운함", "뿌듯함") */
+  emotions: string[];
+  /** 등장한 인물 */
+  personIds: string[];
+  orgIds: string[];
+  places: string[];
+  /** 무슨 일이 있었는지 (사실 위주 요약) */
+  events: string[];
+  /** 소재 태그 */
+  tags: string[];
+  /** AI 분석을 마쳤는지 (실패해도 원문은 남는다) */
+  analyzed: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * 사람 한 명과의 상호작용 기록 한 건.
+ *
+ * 단일 점수로 사람을 규정하지 않기 위해, 판정마다
+ * **근거가 된 원문 인용(quote)** 을 반드시 함께 남긴다.
+ */
+export interface RelationshipLog {
+  id: string;
+  workspaceId: string;
+  personId: string;
+  /** 어느 일기에서 나왔는지 (직접 추가면 null) */
+  diaryEntryId: string | null;
+  occurredAt: Date;
+  /** 객관 — 무슨 일이 있었는지 */
+  event: string;
+  /** 주관 — 그때 내가 느낀 것 */
+  feeling: string | null;
+  /** 감정 방향 -2 ~ +2 */
+  sentiment: number;
+  /** 판정 근거가 된 원문 조각. 없으면 사용자가 직접 쓴 기록 */
+  quote: string | null;
+  createdAt: Date;
 }
 
 /** 조직 / 단체 */
@@ -233,6 +349,15 @@ export interface ExtractionResult {
   tasks: ExtractedTask[];
   /** 어디에도 안 들어간 잔여 정보 */
   notes: string[];
+  /** 이 입력이 무슨 주제에 관한 것인지 */
+  topic: ExtractedTopic | null;
+}
+
+export interface ExtractedTopic {
+  label: string;
+  /** 기존 주제와 같은 주제면 그 id (신규 남발 방지) */
+  matchedTopicId: string | null;
+  isNew: boolean;
 }
 
 export interface ExtractedSchedule {
@@ -279,6 +404,63 @@ export interface ExtractedTask {
   dueExpr: string | null;
   dueAt: string | null;
   completionMode: "manual" | "deliverable" | "checklist";
+}
+
+// ==========================================
+// 결제수단 / 고정비
+// ==========================================
+
+/**
+ * 결제수단.
+ *
+ * ⚠️ 카드번호 전체·CVC·유효기간은 저장하지 않는다.
+ * "이 돈이 어느 카드에서 나가는가"를 구분하는 데는
+ * 카드사 + 별칭 + 끝 4자리면 충분하고, 유출돼도 결제에 쓸 수 없다.
+ */
+export interface PaymentMethod {
+  id: string;
+  workspaceId: string;
+  /** 카드사·은행명 ("신한카드", "국민은행") */
+  issuer: string;
+  /** 사용자가 붙인 이름 ("주력카드", "구독 전용") */
+  label: string;
+  /** 끝 4자리만. 그 이상은 받지 않는다 */
+  last4: string;
+  type: "credit" | "debit" | "account" | "cash" | "other";
+  /** 카드 결제일 (1~31). 없으면 null */
+  billingDay: number | null;
+  color: string;
+  active: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** 구독·고정비 */
+export interface FixedCost {
+  id: string;
+  workspaceId: string;
+  title: string;
+  /** 원 단위 정수 */
+  amount: number;
+  currency: string;
+  cycle: "monthly" | "yearly";
+  /** 결제일 (1~31). 말일이 없는 달은 그 달 마지막 날로 밀린다 */
+  paymentDay: number;
+  /** cycle이 yearly일 때의 결제 월 (1~12) */
+  paymentMonth: number | null;
+  /** 어느 결제수단에서 빠지는지. 현금 등은 null */
+  paymentMethodId: string | null;
+  /** 카테고리 (Category.id) */
+  categoryId: string | null;
+  memo: string;
+  startedAt: Date;
+  /** 해지일. null이면 계속 나감 */
+  endedAt: Date | null;
+  active: boolean;
+  /** 영수증/캡처 원본 참조 */
+  sourceInputId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 // --- 카테고리 ---
@@ -373,5 +555,5 @@ export interface CalendarDay {
 }
 
 // --- 뷰 타입 ---
-export type AppView = "calendar" | "todo" | "mandarat" | "dashboard" | "drafts" | "settings" | "admin" | "log" | "data" | "people";
+export type AppView = "calendar" | "todo" | "mandarat" | "dashboard" | "drafts" | "settings" | "admin" | "log" | "data" | "people" | "fixedcost" | "report" | "diary";
 export type CalendarSubView = "monthly" | "daily";

@@ -20,9 +20,21 @@ import type {
   Person,
   Organization,
   CapturedInput,
+  Topic,
+  PaymentMethod,
+  FixedCost,
+  DiaryEntry,
+  RelationshipLog,
 } from "@/lib/types";
-import { generateId, computeRollup } from "@/lib/services";
+import {
+  generateId,
+  computeRollup,
+  createNode,
+  createTopicNote,
+} from "@/lib/services";
+
 import { occursOn, occurrenceTimes } from "@/lib/recurrence";
+import { shouldPromoteTopic } from "@/lib/types";
 import * as fs from "@/lib/firestore";
 
 // ─── Firestore 쓰기 헬퍼 (fire-and-forget, 에러 콘솔) ───
@@ -582,6 +594,311 @@ export const useOrgStore = create<OrgState>((set, get) => ({
     if (!o || o.relatedNodeIds.includes(nodeId)) return;
     get().updateOrg(orgId, { relatedNodeIds: [...o.relatedNodeIds, nodeId] });
   },
+}));
+
+// ==========================================
+// 주제 레이어 — 일정 없는 입력이 쌓이는 곳
+// ==========================================
+interface TopicState {
+  topics: Record<string, Topic>;
+  setTopics: (t: Topic[]) => void;
+  addTopic: (t: Topic) => void;
+  updateTopic: (id: string, updates: Partial<Topic>) => void;
+  removeTopic: (id: string) => void;
+  /** 라벨/별칭으로 기존 주제 찾기 — 신규 남발 방지 */
+  findByLabel: (label: string) => Topic | undefined;
+  /** 주제에 메모 추가 */
+  addNote: (topicId: string, text: string, captureId: string | null) => void;
+  /** 주제에 노드(행동) 연결 */
+  linkNode: (topicId: string, nodeId: string) => void;
+  /** 승격 조건을 만족한 주제들 */
+  getPromotable: () => Topic[];
+  /** 주제를 프로젝트로 승격 — 소속 노드를 전부 그 프로젝트로 옮긴다 */
+  promote: (topicId: string) => string | null;
+}
+
+const normLabel = (v: string) =>
+  v.replace(/\s+/g, "").toLowerCase().replace(/[·・,./-]/g, "");
+
+export const useTopicStore = create<TopicState>((set, get) => ({
+  topics: {},
+  setTopics: (list) => {
+    const map: Record<string, Topic> = {};
+    list.forEach((t) => { map[t.id] = t; });
+    set({ topics: map });
+  },
+  addTopic: (t) => {
+    set((s) => ({ topics: { ...s.topics, [t.id]: t } }));
+    fsWrite((uid) => fs.saveTopic(uid, t));
+  },
+  updateTopic: (id, updates) => {
+    set((s) => ({
+      topics: s.topics[id]
+        ? { ...s.topics, [id]: { ...s.topics[id], ...updates, updatedAt: new Date() } }
+        : s.topics,
+    }));
+    fsWrite((uid) => fs.updateTopicFields(uid, id, updates));
+  },
+  removeTopic: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.topics;
+      return { topics: rest };
+    });
+    fsWrite((uid) => fs.deleteTopic(uid, id));
+  },
+  findByLabel: (label) => {
+    const target = normLabel(label);
+    if (!target) return undefined;
+    return Object.values(get().topics).find((t) => {
+      if (normLabel(t.label) === target) return true;
+      if (t.aliases.some((a) => normLabel(a) === target)) return true;
+      // 한쪽이 다른 쪽을 포함하면 같은 주제로 본다 ("제주이주" ⊂ "제주이주준비")
+      const self = normLabel(t.label);
+      if (self.length >= 3 && target.length >= 3) {
+        return self.includes(target) || target.includes(self);
+      }
+      return false;
+    });
+  },
+  addNote: (topicId, text, captureId) => {
+    const t = get().topics[topicId];
+    if (!t) return;
+    get().updateTopic(topicId, {
+      notes: [...t.notes, createTopicNote(text, captureId)],
+    });
+  },
+  linkNode: (topicId, nodeId) => {
+    const t = get().topics[topicId];
+    if (!t || t.nodeIds.includes(nodeId)) return;
+    get().updateTopic(topicId, { nodeIds: [...t.nodeIds, nodeId] });
+  },
+  getPromotable: () =>
+    Object.values(get().topics).filter(shouldPromoteTopic),
+  promote: (topicId) => {
+    const topic = get().topics[topicId];
+    if (!topic || topic.status !== "collecting") return null;
+
+    // 주제 자체가 프로젝트 루트 노드가 된다 (data-model.md §6)
+    const rootId = generateId();
+    const nodeStore = useNodeStore.getState();
+    const root = createNode({
+      id: rootId,
+      workspaceId: topic.workspaceId,
+      type: "goal",
+      kind: "project",
+      title: topic.label,
+      // 쌓아둔 메모를 프로젝트 설명으로 옮긴다 — 맥락이 사라지지 않게
+      description: topic.notes.map((n) => `· ${n.text}`).join("\n"),
+      projectId: rootId,
+      parentId: null,
+      topicId: topic.id,
+    });
+    nodeStore.addNodeWithLog(root);
+
+    useProjectStore.getState().addProject({
+      id: rootId,
+      title: topic.label,
+      progress: 0,
+      memberCount: 1,
+      updatedAt: new Date(),
+    });
+
+    // 주제에 붙어 있던 노드들을 프로젝트 하위로 이동
+    for (const nid of topic.nodeIds) {
+      if (!nodeStore.nodes[nid]) continue;
+      nodeStore.moveNode(nid, rootId, rootId);
+    }
+
+    get().updateTopic(topicId, {
+      status: "promoted",
+      promotedProjectId: rootId,
+    });
+    return rootId;
+  },
+}));
+
+// ==========================================
+// 결제수단 (카드번호 전체는 저장하지 않는다)
+// ==========================================
+interface PaymentMethodState {
+  methods: Record<string, PaymentMethod>;
+  setMethods: (m: PaymentMethod[]) => void;
+  addMethod: (m: PaymentMethod) => void;
+  updateMethod: (id: string, u: Partial<PaymentMethod>) => void;
+  removeMethod: (id: string) => void;
+  getActive: () => PaymentMethod[];
+}
+
+export const usePaymentMethodStore = create<PaymentMethodState>((set, get) => ({
+  methods: {},
+  setMethods: (list) => {
+    const map: Record<string, PaymentMethod> = {};
+    list.forEach((m) => { map[m.id] = m; });
+    set({ methods: map });
+  },
+  addMethod: (m) => {
+    set((s) => ({ methods: { ...s.methods, [m.id]: m } }));
+    fsWrite((uid) => fs.savePaymentMethod(uid, m));
+  },
+  updateMethod: (id, u) => {
+    set((s) => ({
+      methods: s.methods[id]
+        ? { ...s.methods, [id]: { ...s.methods[id], ...u, updatedAt: new Date() } }
+        : s.methods,
+    }));
+    fsWrite((uid) => fs.updatePaymentMethodFields(uid, id, u));
+  },
+  removeMethod: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.methods;
+      return { methods: rest };
+    });
+    // 이 카드를 쓰던 고정비는 '미지정'으로 남긴다 (고정비까지 지우지 않는다)
+    const fcStore = useFixedCostStore.getState();
+    for (const c of Object.values(fcStore.costs)) {
+      if (c.paymentMethodId === id) {
+        fcStore.updateCost(c.id, { paymentMethodId: null });
+      }
+    }
+    fsWrite((uid) => fs.deletePaymentMethod(uid, id));
+  },
+  getActive: () => Object.values(get().methods).filter((m) => m.active),
+}));
+
+// ==========================================
+// 고정비 / 구독
+// ==========================================
+interface FixedCostState {
+  costs: Record<string, FixedCost>;
+  setCosts: (c: FixedCost[]) => void;
+  addCost: (c: FixedCost) => void;
+  updateCost: (id: string, u: Partial<FixedCost>) => void;
+  removeCost: (id: string) => void;
+  /** 해지 처리 — 기록은 남기고 앞으로만 안 나가게 */
+  endCost: (id: string, endedAt?: Date) => void;
+  getActive: () => FixedCost[];
+}
+
+export const useFixedCostStore = create<FixedCostState>((set, get) => ({
+  costs: {},
+  setCosts: (list) => {
+    const map: Record<string, FixedCost> = {};
+    list.forEach((c) => { map[c.id] = c; });
+    set({ costs: map });
+  },
+  addCost: (c) => {
+    set((s) => ({ costs: { ...s.costs, [c.id]: c } }));
+    fsWrite((uid) => fs.saveFixedCost(uid, c));
+  },
+  updateCost: (id, u) => {
+    set((s) => ({
+      costs: s.costs[id]
+        ? { ...s.costs, [id]: { ...s.costs[id], ...u, updatedAt: new Date() } }
+        : s.costs,
+    }));
+    fsWrite((uid) => fs.updateFixedCostFields(uid, id, u));
+  },
+  removeCost: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.costs;
+      return { costs: rest };
+    });
+    fsWrite((uid) => fs.deleteFixedCost(uid, id));
+  },
+  endCost: (id, endedAt = new Date()) => {
+    get().updateCost(id, { endedAt, active: false });
+  },
+  getActive: () => Object.values(get().costs).filter((c) => c.active),
+}));
+
+// ==========================================
+// 일기 (원문 보존)
+// ==========================================
+interface DiaryState {
+  entries: Record<string, DiaryEntry>;
+  setEntries: (e: DiaryEntry[]) => void;
+  addEntry: (e: DiaryEntry) => void;
+  updateEntry: (id: string, u: Partial<DiaryEntry>) => void;
+  removeEntry: (id: string) => void;
+  getAll: () => DiaryEntry[];
+}
+
+export const useDiaryStore = create<DiaryState>((set, get) => ({
+  entries: {},
+  setEntries: (list) => {
+    const map: Record<string, DiaryEntry> = {};
+    list.forEach((e) => { map[e.id] = e; });
+    set({ entries: map });
+  },
+  addEntry: (e) => {
+    set((s) => ({ entries: { ...s.entries, [e.id]: e } }));
+    fsWrite((uid) => fs.saveDiaryEntry(uid, e));
+  },
+  updateEntry: (id, u) => {
+    set((s) => ({
+      entries: s.entries[id]
+        ? { ...s.entries, [id]: { ...s.entries[id], ...u, updatedAt: new Date() } }
+        : s.entries,
+    }));
+    fsWrite((uid) => fs.updateDiaryEntryFields(uid, id, u));
+  },
+  removeEntry: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.entries;
+      return { entries: rest };
+    });
+    // 이 일기에서 나온 관계 기록도 함께 지운다 (근거가 사라지므로)
+    const relStore = useRelationshipStore.getState();
+    for (const l of Object.values(relStore.logs)) {
+      if (l.diaryEntryId === id) relStore.removeLog(l.id);
+    }
+    fsWrite((uid) => fs.deleteDiaryEntry(uid, id));
+  },
+  getAll: () => Object.values(get().entries),
+}));
+
+// ==========================================
+// 관계 로그
+// ==========================================
+interface RelationshipState {
+  logs: Record<string, RelationshipLog>;
+  setLogs: (l: RelationshipLog[]) => void;
+  addLog: (l: RelationshipLog) => void;
+  updateLog: (id: string, u: Partial<RelationshipLog>) => void;
+  removeLog: (id: string) => void;
+  getAll: () => RelationshipLog[];
+  getForPerson: (personId: string) => RelationshipLog[];
+}
+
+export const useRelationshipStore = create<RelationshipState>((set, get) => ({
+  logs: {},
+  setLogs: (list) => {
+    const map: Record<string, RelationshipLog> = {};
+    list.forEach((l) => { map[l.id] = l; });
+    set({ logs: map });
+  },
+  addLog: (l) => {
+    set((s) => ({ logs: { ...s.logs, [l.id]: l } }));
+    fsWrite((uid) => fs.saveRelationshipLog(uid, l));
+  },
+  updateLog: (id, u) => {
+    set((s) => ({
+      logs: s.logs[id] ? { ...s.logs, [id]: { ...s.logs[id], ...u } } : s.logs,
+    }));
+    fsWrite((uid) => fs.updateRelationshipLogFields(uid, id, u));
+  },
+  removeLog: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.logs;
+      return { logs: rest };
+    });
+    fsWrite((uid) => fs.deleteRelationshipLog(uid, id));
+  },
+  getAll: () => Object.values(get().logs),
+  getForPerson: (personId) =>
+    Object.values(get().logs)
+      .filter((l) => l.personId === personId)
+      .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime()),
 }));
 
 // ==========================================

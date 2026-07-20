@@ -29,13 +29,15 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const RAW_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
 const MODEL = RAW_MODEL === "gpt-5-mini" ? "gpt-4o-mini" : RAW_MODEL;
 
-export type Intent = "chat" | "schedule" | "command" | "question";
+export type Intent = "chat" | "schedule" | "note" | "expense" | "command" | "question";
 
 interface Ctx {
   projects: { id: string; title: string }[];
   categories: { id: string; label: string }[];
   people: { id: string; name: string; org: string | null }[];
   organizations: { id: string; name: string }[];
+  topics: { id: string; label: string }[];
+  methods: { id: string; issuer: string; last4: string; label: string }[];
   /** 최근/다가오는 일정 요약 — 질문 답변에 사용 */
   upcoming: { title: string; when: string; recurrence: string | null }[];
   counts: Record<string, number>;
@@ -98,6 +100,7 @@ function ctxSummary(ctx: Ctx): string {
     `카테고리: ${list(ctx.categories.map((c) => c.label))}`,
     `등록된 인물: ${list(ctx.people.map((p) => p.name))}`,
     `조직: ${list(ctx.organizations.map((o) => o.name))}`,
+    `모으는 중인 주제: ${list(ctx.topics.map((t) => t.label))}`,
     `다가오는 일정: ${
       ctx.upcoming.length
         ? ctx.upcoming
@@ -133,15 +136,22 @@ ${ctxSummary(ctx)}
     예) "이번주 일정 뭐 있어?", "김철수 연락처 뭐였지?", "그 미팅 언제였지?"
 - "command"  : 저장된 데이터를 바꾸거나 지우라는 지시.
     예) "그 일정 취소해줘", "매주로 바꿔줘", "미팅 3시로 옮겨"
-- "chat"     : 그 외 대화. 질문·확인·잡담·앱 사용법·직전 답변에 대한 반문.
+- "expense"  : **구독·고정비 등록.** 매달/매년 나가는 돈.
+    예) "넷플릭스 매월 17일 13500원 신한카드", "헬스장 회비 7만원 매월 5일",
+        "도메인 연간 12만원 3월 2일 결제"
+- "note"     : **날짜도 할일도 없지만 기록해 둘 만한 내용.** 생각·정보·메모·알게 된 사실.
+    예) "제주 이주 알아보다가 물류비가 생각보다 비싸네", "그 사람 예전에 스타트업 했었대",
+        "AI모임 사람들 대부분 개발자 아님"
+- "chat"     : 남길 내용이 없는 순수 대화. 질문·확인·잡담·앱 사용법·직전 답변에 대한 반문.
     예) "매주라고 했는데 그건 적용이 어렵나?", "고마워", "이거 어떻게 써?"
 
 중요:
 - **물음표로 끝나거나 되묻는 문장은 대부분 schedule이 아니다.** 새 일정을 만들라는 게 아니라 묻는 것이다.
 - 직전 대화 맥락을 보고 판단하라. 앞서 일정을 만들었고 지금 그에 대해 되묻는다면 chat 또는 command다.
-- 애매하면 schedule이 아니라 chat으로 보내라. 잘못 저장하는 것보다 되묻는 게 낫다.
+- 애매하면 schedule이 아니라 chat 또는 note로 보내라. 잘못된 일정을 만드는 것보다 낫다.
+- **chat과 note의 차이**: 나중에 다시 보고 싶을 내용이면 note, 그 자리에서 끝나는 말이면 chat.
 
-JSON만 출력: {"intent":"chat|schedule|command|question","reason":"한 줄 근거"}`;
+JSON만 출력: {"intent":"chat|schedule|note|expense|command|question","reason":"한 줄 근거"}`;
 
   const msgs = [
     ...history.slice(-6).map((h) => ({ role: h.role, content: h.content })),
@@ -149,7 +159,7 @@ JSON만 출력: {"intent":"chat|schedule|command|question","reason":"한 줄 근
   ];
   const raw = await callOpenAI(system, msgs, true);
   const p = parseJson(raw);
-  const intent: Intent = ["chat", "schedule", "command", "question"].includes(
+  const intent: Intent = ["chat", "schedule", "note", "expense", "command", "question"].includes(
     p.intent
   )
     ? p.intent
@@ -213,6 +223,8 @@ ${fmt(ctx.categories.map((c) => `- id:"${c.id}" label:"${c.label}"`))}
 ${fmt(ctx.people.map((p) => `- id:"${p.id}" name:"${p.name}" org:"${p.org ?? ""}"`))}
 ### 조직
 ${fmt(ctx.organizations.map((o) => `- id:"${o.id}" name:"${o.name}"`))}
+### 모으는 중인 주제 (가능하면 여기에 붙여라)
+${fmt(ctx.topics.map((t) => `- id:"${t.id}" label:"${t.label}"`))}
 
 ## 출력 (JSON only)
 {
@@ -229,7 +241,8 @@ ${fmt(ctx.organizations.map((o) => `- id:"${o.id}" name:"${o.name}"`))}
   "organizations": [{"name":"","orgType":null,"matchedOrgId":null,"isNew":true}],
   "project": {"matchedProjectId":null,"matchConfidence":0,"newProjectSuggestion":null} | null,
   "tasks": [{"title":"","kind":"task|project","dueExpr":null,"dueAt":null,"completionMode":"manual|deliverable|checklist"}],
-  "notes": []
+  "notes": [],
+  "topic": {"label":"이 입력이 무슨 주제에 관한 것인지","matchedTopicId":null,"isNew":true} | null
 }
 
 ## 규칙
@@ -240,6 +253,16 @@ ${fmt(ctx.organizations.map((o) => `- id:"${o.id}" name:"${o.name}"`))}
 4. 조직·단체명은 organizations 층으로.
 5. 프로젝트는 내용이 맞을 때만 matchedProjectId. confidence 30 미만이면 null.
 6. 정보가 없는 층은 빈 배열/null. 억지로 만들지 마라.
+   **단, notes는 예외다.** 일정도 실행항목도 없는 입력이면 그 내용을 반드시 notes에 담아라.
+   notes가 비면 사용자가 적은 내용이 통째로 사라진다.
+   - "제주 이주 알아보다가 물류비가 비싸더라" → notes: ["제주 이주 시 물류비가 비쌈"]
+   - 여러 사실이 섞여 있으면 사실 단위로 쪼개서 각각 넣어라.
+   - summary는 요약일 뿐 저장되지 않는다. 남길 내용은 notes에 넣어야 한다.
+7. **주제(topic)는 거의 항상 채워라.** 이 입력이 무엇에 관한 것인지 한 덩어리로 묶는 이름이다.
+   - 위 "모으는 중인 주제"에 맞는 게 있으면 **반드시 그 id를 matchedTopicId에 넣고 isNew=false**.
+     비슷하기만 해도 새로 만들지 말고 기존 것에 붙여라. 주제가 갈라지면 쓸모가 없어진다.
+   - 없을 때만 새 label을 짓되, 너무 좁게 짓지 마라. ("7월 24일 강소희 미팅"❌ → "강의 준비"⭕)
+   - 인사말·감사 같은 잡담이면 null.
 
 JSON만. 코드펜스 금지.`;
 
@@ -310,12 +333,86 @@ JSON만. 코드펜스 금지.`;
     project: p.project ?? null,
     tasks,
     notes: Array.isArray(p.notes) ? p.notes : [],
+    topic: p.topic ?? null,
   };
 }
 
 function toLocalISO(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
+}
+
+// ─────────────────────────────────────────
+// 2단계-B2: 고정비 담당
+// ─────────────────────────────────────────
+
+async function doExpense(input: string, ctx: Ctx) {
+  const { str, dow } = todayInfo();
+  const fmt = (a: string[]) => (a.length ? a.join("\n") : "(없음)");
+
+  const system = `너는 구독·고정비 정보를 뽑는 추출 엔진이다.
+
+오늘: ${str}(${dow})
+
+## 등록된 결제수단
+${fmt(ctx.methods.map((m) => `- id:"${m.id}" ${m.issuer} ****${m.last4} (${m.label})`))}
+## 카테고리
+${fmt(ctx.categories.map((c) => `- id:"${c.id}" label:"${c.label}"`))}
+
+## 출력 (JSON only)
+{
+  "items": [
+    {
+      "title": "서비스·항목명 (예: 넷플릭스, 헬스장)",
+      "amount": 숫자만 (원 단위),
+      "currency": "KRW",
+      "cycle": "monthly" | "yearly",
+      "paymentDay": 1~31,
+      "paymentMonth": cycle이 yearly일 때 1~12, 아니면 null,
+      "matchedMethodId": "위 결제수단 중 맞는 id 또는 null",
+      "methodHint": "입력에 나온 카드 표현 원문 (예: \\"신한카드\\") 또는 null",
+      "categoryId": "위 카테고리 id 또는 null",
+      "memo": ""
+    }
+  ]
+}
+
+## 규칙
+1. **금액은 숫자만.** "13,500원"→13500, "7만원"→70000, "1만 3천원"→13000.
+2. 결제일: "매월 17일"→17. 날짜를 못 찾으면 paymentDay는 1로 두되 memo에 "결제일 확인 필요"를 남겨라.
+3. "연간"·"매년"이면 cycle="yearly"이고 paymentMonth를 채워라.
+4. 카드 이름이 나오면 위 목록에서 카드사가 일치하는 id를 matchedMethodId에 넣어라.
+   목록에 없으면 null로 두고 methodHint에 원문을 남겨라. **없는 id를 지어내지 마라.**
+5. 한 문장에 여러 건이 있으면 items에 전부 담아라.
+6. **카드번호는 절대 출력하지 마라.** 입력에 있어도 무시한다.
+
+JSON만. 코드펜스 금지.`;
+
+  const raw = await callOpenAI(system, [{ role: "user", content: input }], true);
+  const p = parseJson(raw);
+
+  const items = (Array.isArray(p.items) ? p.items : []).map((it: any) => ({
+    title: String(it.title ?? "").slice(0, 80),
+    amount: Number(it.amount) || 0,
+    currency: it.currency ?? "KRW",
+    cycle: it.cycle === "yearly" ? "yearly" : "monthly",
+    paymentDay: Math.min(31, Math.max(1, Number(it.paymentDay) || 1)),
+    paymentMonth:
+      it.cycle === "yearly" && it.paymentMonth != null
+        ? Math.min(12, Math.max(1, Number(it.paymentMonth)))
+        : null,
+    // 존재하지 않는 id를 지어냈으면 버린다
+    matchedMethodId: ctx.methods.some((m) => m.id === it.matchedMethodId)
+      ? it.matchedMethodId
+      : null,
+    methodHint: it.methodHint ?? null,
+    categoryId: ctx.categories.some((c) => c.id === it.categoryId)
+      ? it.categoryId
+      : null,
+    memo: String(it.memo ?? ""),
+  }));
+
+  return { items };
 }
 
 // ─────────────────────────────────────────
@@ -374,6 +471,8 @@ export async function POST(req: NextRequest) {
     categories: body.ctx?.categories ?? [],
     people: body.ctx?.people ?? [],
     organizations: body.ctx?.organizations ?? [],
+    topics: body.ctx?.topics ?? [],
+    methods: body.ctx?.methods ?? [],
     upcoming: body.ctx?.upcoming ?? [],
     counts: body.ctx?.counts ?? {},
   };
@@ -383,9 +482,13 @@ export async function POST(req: NextRequest) {
     const { intent, reason } = await classify(input, history, ctx);
     console.log(`[AI] intent=${intent} (${reason}) input="${input.slice(0, 40)}"`);
 
-    if (intent === "schedule") {
+    // note도 같은 추출기를 탄다. 일정이 없을 뿐 기록할 내용은 층으로 분해된다.
+    if (intent === "schedule" || intent === "note") {
       const extraction = await doSchedule(input, ctx);
       return NextResponse.json({ intent, extraction });
+    }
+    if (intent === "expense") {
+      return NextResponse.json({ intent, expense: await doExpense(input, ctx) });
     }
     if (intent === "question") {
       return NextResponse.json({

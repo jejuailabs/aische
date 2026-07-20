@@ -39,6 +39,7 @@ import {
 import { useLocale } from '@/hooks/use-locale';
 import { usePersonStore, useOrgStore, useNodeStore } from '@/lib/store';
 import { createPerson, createOrganization } from '@/lib/services';
+import { RelationshipPanel } from '@/components/diary/relationship-panel';
 import type { Person, Organization } from '@/lib/types';
 
 const WS = 'demo-workspace';
@@ -476,7 +477,7 @@ export function PeopleView() {
 
       {/* ── Person Dialog ──────────────────────────── */}
       <Dialog open={personOpen} onOpenChange={setPersonOpen}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
               {editingPerson ? t.people.editPerson : t.people.newPerson}
@@ -592,6 +593,10 @@ export function PeopleView() {
                     )}
                   </div>
                 </div>
+
+                {/* 관계 로그 — 이 사람과 있었던 일들 */}
+                <Separator />
+                <RelationshipPanel personId={editingPerson.id} />
               </>
             )}
           </div>

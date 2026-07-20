@@ -13,7 +13,11 @@ import {
   Download,
   ChevronDown,
   ChevronRight,
+  Lightbulb,
+  Sparkles,
+  Archive,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -48,13 +52,16 @@ import {
   useNodeStore,
   usePersonStore,
   useOrgStore,
+  useTopicStore,
 } from '@/lib/store';
 import { createCategory } from '@/lib/services';
+import { shouldPromoteTopic } from '@/lib/types';
 import type {
   ProjectSummary,
   Category,
   CapturedInput,
   ExtractionResult,
+  Topic,
 } from '@/lib/types';
 
 const WS = 'demo-workspace';
@@ -196,6 +203,11 @@ export function DataView() {
   const orgs = useOrgStore((s) => s.orgs);
   const removeOrg = useOrgStore((s) => s.removeOrg);
 
+  const topics = useTopicStore((s) => s.topics);
+  const updateTopic = useTopicStore((s) => s.updateTopic);
+  const removeTopic = useTopicStore((s) => s.removeTopic);
+  const promoteTopic = useTopicStore((s) => s.promote);
+
   // project state
   const [editingProject, setEditingProject] = useState<ProjectSummary | null>(
     null,
@@ -223,6 +235,13 @@ export function DataView() {
     null,
   );
 
+  // topic state
+  const [expandedTopic, setExpandedTopic] = useState<string | null>(null);
+  const [editingTopic, setEditingTopic] = useState<Topic | null>(null);
+  const [topicLabel, setTopicLabel] = useState('');
+  const [topicToPromote, setTopicToPromote] = useState<Topic | null>(null);
+  const [topicToDelete, setTopicToDelete] = useState<Topic | null>(null);
+
   // danger state
   const [resetOpen, setResetOpen] = useState(false);
   const [resetInput, setResetInput] = useState('');
@@ -247,6 +266,46 @@ export function DataView() {
       ),
     [captures],
   );
+
+  // 수집 중 → 승격됨 → 보관됨 순으로 묶고, 각 묶음 안은 최근 수정순
+  const topicList = useMemo(() => {
+    const rank: Record<Topic['status'], number> = {
+      collecting: 0,
+      promoted: 1,
+      archived: 2,
+    };
+    return Object.values(topics).sort((a, b) => {
+      if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
+      return b.updatedAt.getTime() - a.updatedAt.getTime();
+    });
+  }, [topics]);
+
+  const topicStatusLabel = (s: Topic['status']) =>
+    s === 'collecting'
+      ? t.data.topicStatusCollecting
+      : s === 'promoted'
+        ? t.data.topicStatusPromoted
+        : t.data.topicStatusArchived;
+
+  // ── topic handlers ──
+  const saveTopicLabel = () => {
+    if (!editingTopic || !topicLabel.trim()) return;
+    updateTopic(editingTopic.id, { label: topicLabel.trim() });
+    setEditingTopic(null);
+  };
+
+  const confirmPromoteTopic = () => {
+    if (!topicToPromote) return;
+    const label = topicToPromote.label;
+    const projectId = promoteTopic(topicToPromote.id);
+    setTopicToPromote(null);
+    if (projectId) toast.success(t.data.topicPromoted.replace('{label}', label));
+  };
+
+  const archiveTopic = (topic: Topic) => {
+    updateTopic(topic.id, { status: 'archived' });
+    toast.success(t.data.topicArchived.replace('{label}', topic.label));
+  };
 
   // ── project handlers ──
   const saveProjectTitle = () => {
@@ -343,6 +402,8 @@ export function DataView() {
     for (const p of Object.values(usePersonStore.getState().people))
       removePerson(p.id);
     for (const o of Object.values(useOrgStore.getState().orgs)) removeOrg(o.id);
+    for (const tp of Object.values(useTopicStore.getState().topics))
+      removeTopic(tp.id);
     for (const c of Object.values(useCaptureStore.getState().captures))
       removeCapture(c.id);
     setResetInput('');
@@ -364,6 +425,11 @@ export function DataView() {
             <span className="text-muted-foreground">
               ({categoryList.length})
             </span>
+          </TabsTrigger>
+          <TabsTrigger value="topics" className="gap-1.5">
+            <Lightbulb className="size-3.5" />
+            {t.data.tabTopics}
+            <span className="text-muted-foreground">({topicList.length})</span>
           </TabsTrigger>
           <TabsTrigger value="captures" className="gap-1.5">
             <Inbox className="size-3.5" />
@@ -485,6 +551,201 @@ export function DataView() {
                 </div>
               </div>
             ))
+          )}
+        </TabsContent>
+
+        {/* ── Topics ───────────────────────────────── */}
+        <TabsContent value="topics" className="mt-4 flex flex-col gap-2">
+          {topicList.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center text-muted-foreground">
+              <Lightbulb className="size-8 opacity-30" />
+              <p className="text-sm">{t.data.noTopics}</p>
+              <p className="max-w-md text-xs">{t.data.topicEmptyHint}</p>
+            </div>
+          ) : (
+            topicList.map((tp) => {
+              const isOpen = expandedTopic === tp.id;
+              const ready = shouldPromoteTopic(tp);
+              const promotedProject = tp.promotedProjectId
+                ? projects.find((p) => p.id === tp.promotedProjectId)
+                : undefined;
+              return (
+                <div
+                  key={tp.id}
+                  className={
+                    ready
+                      ? 'rounded-lg border border-primary/50 bg-primary/5'
+                      : 'rounded-lg border'
+                  }
+                >
+                  <div className="flex flex-wrap items-start gap-2 p-3">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedTopic(isOpen ? null : tp.id)}
+                      className="mt-0.5 shrink-0 text-muted-foreground"
+                      aria-expanded={isOpen}
+                    >
+                      {isOpen ? (
+                        <ChevronDown className="size-4" />
+                      ) : (
+                        <ChevronRight className="size-4" />
+                      )}
+                    </button>
+                    <div className="min-w-[160px] flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p
+                          className={
+                            tp.status === 'archived'
+                              ? 'truncate text-sm font-medium text-muted-foreground'
+                              : 'truncate text-sm font-medium'
+                          }
+                        >
+                          {tp.label}
+                        </p>
+                        <Badge
+                          variant={
+                            tp.status === 'collecting' ? 'secondary' : 'outline'
+                          }
+                          className="text-[10px]"
+                        >
+                          {topicStatusLabel(tp.status)}
+                        </Badge>
+                        {ready && (
+                          <Badge className="gap-1 text-[10px]">
+                            <Sparkles className="size-3" />
+                            {t.data.topicReady}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>
+                          {t.data.topicNoteCount} {tp.notes.length}
+                        </span>
+                        <span>
+                          {t.data.topicNodeCount} {tp.nodeIds.length}
+                        </span>
+                        <span>
+                          {t.data.topicUpdatedAt}{' '}
+                          {format(tp.updatedAt, 'yyyy-MM-dd')}
+                        </span>
+                        {tp.status === 'promoted' && (
+                          <span>
+                            {t.data.topicPromotedTo}:{' '}
+                            {promotedProject?.title ?? tp.promotedProjectId ?? '—'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {tp.status === 'collecting' && (
+                        <Button
+                          variant={ready ? 'default' : 'ghost'}
+                          size="sm"
+                          className="h-8 gap-1.5"
+                          onClick={() => setTopicToPromote(tp)}
+                        >
+                          <Sparkles className="size-3.5" />
+                          {t.data.topicPromote}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 gap-1.5"
+                        onClick={() => {
+                          setEditingTopic(tp);
+                          setTopicLabel(tp.label);
+                        }}
+                      >
+                        <Pencil className="size-3.5" />
+                        {t.data.topicRename}
+                      </Button>
+                      {tp.status !== 'archived' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 gap-1.5"
+                          onClick={() => archiveTopic(tp)}
+                        >
+                          <Archive className="size-3.5" />
+                          {t.data.topicArchive}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 gap-1.5 text-destructive hover:text-destructive"
+                        onClick={() => setTopicToDelete(tp)}
+                      >
+                        <Trash2 className="size-3.5" />
+                        {t.common.delete}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div className="flex flex-col gap-3 px-3 pb-3 pl-9">
+                      <LayerBlock label={t.data.topicNotes}>
+                        {tp.notes.length === 0 ? (
+                          <span className="text-muted-foreground">
+                            {t.data.topicNoNotes}
+                          </span>
+                        ) : (
+                          <ul className="space-y-0.5">
+                            {tp.notes.map((n) => (
+                              <li key={n.id} className="flex gap-2">
+                                <span className="shrink-0 text-muted-foreground">
+                                  {format(n.createdAt, 'MM-dd')}
+                                </span>
+                                <span className="whitespace-pre-wrap">
+                                  {n.text}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </LayerBlock>
+
+                      <LayerBlock label={t.data.topicAliases}>
+                        {tp.aliases.length === 0 ? (
+                          <span className="text-muted-foreground">
+                            {t.data.topicNoAliases}
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {tp.aliases.map((a) => (
+                              <Badge
+                                key={a}
+                                variant="secondary"
+                                className="text-[10px]"
+                              >
+                                {a}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </LayerBlock>
+
+                      <LayerBlock label={t.data.topicLinkedNodes}>
+                        {tp.nodeIds.length === 0 ? (
+                          <span className="text-muted-foreground">
+                            {t.data.topicNoLinkedNodes}
+                          </span>
+                        ) : (
+                          <ul className="list-inside list-disc space-y-0.5">
+                            {tp.nodeIds.map((nid) => (
+                              <li key={nid}>
+                                {nodes[nid]?.title ?? nid}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </LayerBlock>
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
         </TabsContent>
 
@@ -710,6 +971,89 @@ export function DataView() {
             <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>
             <AlertDialogAction
               onClick={confirmDeleteProject}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {t.common.delete}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Topic rename dialog ────────────────────── */}
+      <Dialog
+        open={editingTopic !== null}
+        onOpenChange={(o) => !o && setEditingTopic(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t.data.topicRenameTitle}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {t.data.topicRenameTitle}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="topic-label">{t.data.topicLabel}</Label>
+            <Input
+              id="topic-label"
+              value={topicLabel}
+              onChange={(e) => setTopicLabel(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditingTopic(null)}
+            >
+              {t.common.cancel}
+            </Button>
+            <Button size="sm" onClick={saveTopicLabel}>
+              {t.common.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Topic promote confirm ──────────────────── */}
+      <AlertDialog
+        open={topicToPromote !== null}
+        onOpenChange={(o) => !o && setTopicToPromote(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.data.topicPromoteTitle}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {topicToPromote?.label} — {t.data.topicPromoteDesc}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmPromoteTopic}>
+              {t.data.topicPromote}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Topic delete ───────────────────────────── */}
+      <AlertDialog
+        open={topicToDelete !== null}
+        onOpenChange={(o) => !o && setTopicToDelete(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.data.topicDeleteTitle}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t.data.topicDeleteConfirm}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (topicToDelete) removeTopic(topicToDelete.id);
+                setTopicToDelete(null);
+              }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {t.common.delete}

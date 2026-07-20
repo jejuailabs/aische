@@ -16,8 +16,11 @@ import {
   Shield,
   Users,
   Database,
+  Wallet,
+  FileBarChart,
   ChevronLeft,
   ChevronRight,
+  BookOpen,
 } from 'lucide-react';
 import {
   Sheet,
@@ -38,6 +41,9 @@ import { AdminView } from '@/components/admin/admin-view';
 import { ActivityLogView } from '@/components/log/activity-log-view';
 import { PeopleView } from '@/components/people/people-view';
 import { DataView } from '@/components/data/data-view';
+import { FixedCostView } from '@/components/fixedcost/fixed-cost-view';
+import { ProjectReportView } from '@/components/report/project-report-view';
+import { DiaryView } from '@/components/diary/diary-view';
 import { ChatPanel } from '@/components/chat/chat-panel';
 
 const SWIPE_VIEWS = ['todo', 'calendar', 'mandarat'] as const;
@@ -74,6 +80,12 @@ function OtherContent({ view }: { view: AppView }) {
       return <PeopleView />;
     case 'data':
       return <DataView />;
+    case 'fixedcost':
+      return <FixedCostView />;
+    case 'report':
+      return <ProjectReportView />;
+    case 'diary':
+      return <DiaryView />;
     case 'settings':
       return <SettingsView />;
     default:
@@ -235,6 +247,30 @@ export function MobileShell() {
                 >
                   <FileText className="size-5 text-muted-foreground" />
                   {t.nav.drafts}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => handleOtherNav('fixedcost')}
+                >
+                  <Wallet className="size-5 text-muted-foreground" />
+                  {t.nav.fixedCost}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => handleOtherNav('report')}
+                >
+                  <FileBarChart className="size-5 text-muted-foreground" />
+                  {t.nav.report}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => handleOtherNav('diary')}
+                >
+                  <BookOpen className="size-5 text-muted-foreground" />
+                  {t.nav.diary}
                 </Button>
                 <Button
                   variant="ghost"

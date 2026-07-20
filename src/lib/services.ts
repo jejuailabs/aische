@@ -11,6 +11,13 @@ import type {
   Person,
   Organization,
   CapturedInput,
+  Topic,
+  TopicNote,
+  PaymentMethod,
+  FixedCost,
+  DiaryEntry,
+  RelationshipLog,
+  Mood,
 } from "@/lib/types";
 import { isCriteriaMet } from "@/lib/types";
 import { v4 as uuid } from "uuid";
@@ -66,6 +73,7 @@ export function createNode(partial: Partial<Node> & { title: string; workspaceId
     autoCompleteFromChildren: partial.autoCompleteFromChildren ?? true,
     personIds: partial.personIds ?? [],
     orgIds: partial.orgIds ?? [],
+    topicId: partial.topicId ?? null,
     capturedInputId: partial.capturedInputId ?? null,
   };
 }
@@ -164,6 +172,125 @@ export function createOrganization(
     sourceInputIds: partial.sourceInputIds ?? [],
     createdAt: partial.createdAt ?? now,
     updatedAt: now,
+  };
+}
+
+export function createTopic(
+  partial: Partial<Topic> & { label: string; workspaceId: string }
+): Topic {
+  const now = new Date();
+  return {
+    id: partial.id ?? generateId(),
+    workspaceId: partial.workspaceId,
+    label: partial.label,
+    aliases: partial.aliases ?? [],
+    notes: partial.notes ?? [],
+    nodeIds: partial.nodeIds ?? [],
+    sourceInputIds: partial.sourceInputIds ?? [],
+    status: partial.status ?? "collecting",
+    promotedProjectId: partial.promotedProjectId ?? null,
+    createdAt: partial.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+
+export function createTopicNote(text: string, capturedInputId: string | null): TopicNote {
+  return {
+    id: generateId(),
+    text,
+    capturedInputId,
+    createdAt: new Date(),
+  };
+}
+
+export function createPaymentMethod(
+  partial: Partial<PaymentMethod> & { issuer: string; workspaceId: string }
+): PaymentMethod {
+  const now = new Date();
+  return {
+    id: partial.id ?? generateId(),
+    workspaceId: partial.workspaceId,
+    issuer: partial.issuer,
+    label: partial.label ?? partial.issuer,
+    // 끝 4자리만 보관한다. 그 이상 들어오면 잘라낸다.
+    last4: (partial.last4 ?? "").replace(/\D/g, "").slice(-4),
+    type: partial.type ?? "credit",
+    billingDay: partial.billingDay ?? null,
+    color: partial.color ?? "#6366f1",
+    active: partial.active ?? true,
+    createdAt: partial.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+
+export function createFixedCost(
+  partial: Partial<FixedCost> & { title: string; amount: number; workspaceId: string }
+): FixedCost {
+  const now = new Date();
+  return {
+    id: partial.id ?? generateId(),
+    workspaceId: partial.workspaceId,
+    title: partial.title,
+    amount: Math.round(partial.amount),
+    currency: partial.currency ?? "KRW",
+    cycle: partial.cycle ?? "monthly",
+    paymentDay: Math.min(31, Math.max(1, partial.paymentDay ?? 1)),
+    paymentMonth: partial.paymentMonth ?? null,
+    paymentMethodId: partial.paymentMethodId ?? null,
+    categoryId: partial.categoryId ?? null,
+    memo: partial.memo ?? "",
+    startedAt: partial.startedAt ?? now,
+    endedAt: partial.endedAt ?? null,
+    active: partial.active ?? true,
+    sourceInputId: partial.sourceInputId ?? null,
+    createdAt: partial.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+
+export function createDiaryEntry(
+  partial: Partial<DiaryEntry> & { rawText: string; workspaceId: string }
+): DiaryEntry {
+  const now = new Date();
+  return {
+    id: partial.id ?? generateId(),
+    workspaceId: partial.workspaceId,
+    // 원문은 어떤 경우에도 가공하지 않는다
+    rawText: partial.rawText,
+    channel: partial.channel ?? "text",
+    entryDate: partial.entryDate ?? now,
+    title: partial.title ?? partial.rawText.slice(0, 20),
+    mood: partial.mood ?? null,
+    emotions: partial.emotions ?? [],
+    personIds: partial.personIds ?? [],
+    orgIds: partial.orgIds ?? [],
+    places: partial.places ?? [],
+    events: partial.events ?? [],
+    tags: partial.tags ?? [],
+    analyzed: partial.analyzed ?? false,
+    createdAt: partial.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+
+export function createRelationshipLog(
+  partial: Partial<RelationshipLog> & {
+    personId: string;
+    event: string;
+    workspaceId: string;
+  }
+): RelationshipLog {
+  return {
+    id: partial.id ?? generateId(),
+    workspaceId: partial.workspaceId,
+    personId: partial.personId,
+    diaryEntryId: partial.diaryEntryId ?? null,
+    occurredAt: partial.occurredAt ?? new Date(),
+    event: partial.event,
+    feeling: partial.feeling ?? null,
+    sentiment: Math.max(-2, Math.min(2, partial.sentiment ?? 0)),
+    quote: partial.quote ?? null,
+    createdAt: partial.createdAt ?? new Date(),
   };
 }
 

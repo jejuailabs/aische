@@ -14,8 +14,9 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { User, Bell, Palette, Link2, Shield, LogOut } from 'lucide-react';
+import { User, Bell, Palette, Link2, Shield, LogOut, CreditCard } from 'lucide-react';
 import { NotificationSettings } from './notification-settings';
+import { PaymentMethodSettings } from './payment-method-settings';
 import { signOut } from 'firebase/auth';
 import { getClientAuth } from '@/lib/firebase';
 import type { Language, HomeMode } from '@/lib/types';
@@ -33,7 +34,7 @@ export function SettingsView() {
   return (
     <div className="mx-auto max-w-2xl">
       <Tabs defaultValue="general" className="w-full">
-        <TabsList className="w-full grid grid-cols-4 mb-4">
+        <TabsList className="w-full grid grid-cols-5 mb-4">
           <TabsTrigger value="general" className="gap-1.5 text-xs">
             <Palette className="size-3" />
             <span className="hidden sm:inline">{t.settings.title}</span>
@@ -41,6 +42,10 @@ export function SettingsView() {
           <TabsTrigger value="notifications" className="gap-1.5 text-xs">
             <Bell className="size-3" />
             <span className="hidden sm:inline">{t.notification.title}</span>
+          </TabsTrigger>
+          <TabsTrigger value="payment" className="gap-1.5 text-xs">
+            <CreditCard className="size-3" />
+            <span className="hidden sm:inline">{t.payment.title}</span>
           </TabsTrigger>
           <TabsTrigger value="integrations" className="gap-1.5 text-xs">
             <Link2 className="size-3" />
@@ -99,6 +104,11 @@ export function SettingsView() {
         {/* Notifications */}
         <TabsContent value="notifications">
           <NotificationSettings />
+        </TabsContent>
+
+        {/* Payment methods (고정비가 어느 카드에서 빠지는지) */}
+        <TabsContent value="payment">
+          <PaymentMethodSettings />
         </TabsContent>
 
         {/* Integrations (Phase 5 demo) */}

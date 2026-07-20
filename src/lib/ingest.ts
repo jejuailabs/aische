@@ -31,6 +31,7 @@ import type {
   ProjectSummary,
   ScheduleInfo,
   RecurrenceRule,
+  Topic,
   NodeType,
   InputChannel,
 } from "@/lib/types";
@@ -39,6 +40,8 @@ import {
   createPerson,
   createOrganization,
   createCapturedInput,
+  createTopic,
+  createTopicNote,
   generateId,
 } from "@/lib/services";
 import { describeRecurrence } from "@/lib/recurrence";
@@ -55,6 +58,7 @@ export type PlanLayer =
   | "organization"
   | "project"
   | "task"
+  | "topic"
   | "note";
 
 export interface PlanItem {
@@ -86,6 +90,8 @@ export function buildPlan(
     projects: ProjectSummary[];
     findPerson: (name: string, org?: string | null) => Person | undefined;
     findOrg: (name: string) => Organization | undefined;
+    findTopic: (label: string) => Topic | undefined;
+    findTopicById: (id: string) => Topic | undefined;
   }
 ): IngestPlan {
   const items: PlanItem[] = [];
@@ -177,12 +183,31 @@ export function buildPlan(
     });
   }
 
+  // --- 주제 층 ---
+  if (ex.topic?.label) {
+    const existing = ex.topic.matchedTopicId
+      ? ctx.findTopicById(ex.topic.matchedTopicId)
+      : ctx.findTopic(ex.topic.label);
+    const count = existing
+      ? existing.notes.length + existing.nodeIds.length
+      : 0;
+    items.push({
+      layer: "topic",
+      label: existing?.label ?? ex.topic.label,
+      detail: existing
+        ? `기존 주제에 누적 (현재 ${count}건)`
+        : "새 주제로 모으기 시작",
+      action: existing ? "link" : "create",
+      enabled: true,
+    });
+  }
+
   // --- 잔여 메모 ---
   for (const n of ex.notes) {
     items.push({
       layer: "note",
       label: n,
-      detail: null,
+      detail: ex.topic?.label ? `주제: ${ex.topic.label}` : "주제 미지정",
       action: "create",
       enabled: true,
     });
@@ -213,6 +238,11 @@ export interface ApplyDeps {
   findOrg: (name: string) => Organization | undefined;
   getPersonById: (id: string) => Person | undefined;
   getOrgById: (id: string) => Organization | undefined;
+  addTopic: (t: Topic) => void;
+  updateTopic: (id: string, u: Partial<Topic>) => void;
+  findTopic: (label: string) => Topic | undefined;
+  findTopicById: (id: string) => Topic | undefined;
+  getTopicById: (id: string) => Topic | undefined;
 }
 
 export interface ApplyResult {
@@ -221,6 +251,7 @@ export interface ApplyResult {
   personIds: string[];
   orgIds: string[];
   projectId: string | null;
+  topicId: string | null;
 }
 
 export function applyPlan(
@@ -247,6 +278,38 @@ export function applyPlan(
   const nodeIds: string[] = [];
   const personIds: string[] = [];
   const orgIds: string[] = [];
+
+  // --- 0.5) 주제 결정 (노드·메모가 모두 여기에 붙는다) ---
+  let topicId: string | null = null;
+  if (ex.topic?.label) {
+    const topicLabel = ex.topic.label;
+    const existing = ex.topic.matchedTopicId
+      ? deps.findTopicById(ex.topic.matchedTopicId)
+      : deps.findTopic(topicLabel);
+
+    if (enabled("topic", existing?.label ?? topicLabel)) {
+      if (existing) {
+        topicId = existing.id;
+        // 표현이 다르면 별칭으로 모아둔다 ("제주 이주" ← "제주도 이주")
+        const isNewAlias =
+          existing.label !== topicLabel && !existing.aliases.includes(topicLabel);
+        deps.updateTopic(existing.id, {
+          aliases: isNewAlias
+            ? [...existing.aliases, topicLabel]
+            : existing.aliases,
+          sourceInputIds: [...existing.sourceInputIds, capture.id],
+        });
+      } else {
+        const topic = createTopic({
+          workspaceId: WS,
+          label: topicLabel,
+          sourceInputIds: [capture.id],
+        });
+        deps.addTopic(topic);
+        topicId = topic.id;
+      }
+    }
+  }
 
   // --- 1) 조직 먼저 (인물이 조직을 참조하므로) ---
   const orgIdByName = new Map<string, string>();
@@ -364,6 +427,7 @@ export function applyPlan(
       schedule,
       personIds,
       orgIds,
+      topicId,
       capturedInputId: capture.id,
       aiMeta: {
         status: "draft",
@@ -412,6 +476,7 @@ export function applyPlan(
           : null,
       personIds,
       orgIds,
+      topicId,
       capturedInputId: capture.id,
       aiMeta: {
         status: "draft",
@@ -423,6 +488,22 @@ export function applyPlan(
     });
     deps.addNode(node);
     nodeIds.push(node.id);
+  }
+
+  // --- 5.5) 메모 저장 (이전에는 카드에만 보이고 실제로는 버려졌다) ---
+  if (topicId) {
+    const topic = deps.getTopicById(topicId);
+    if (topic) {
+      const newNotes = ex.notes
+        .filter((n) => enabled("note", n))
+        .map((n) => createTopicNote(n, capture.id));
+      // 이 입력에서 만들어진 행동(노드)도 주제에 연결한다.
+      // 주제에 행동이 붙는 순간이 프로젝트 승격 신호가 된다.
+      deps.updateTopic(topicId, {
+        notes: newNotes.length ? [...topic.notes, ...newNotes] : topic.notes,
+        nodeIds: Array.from(new Set([...topic.nodeIds, ...nodeIds])),
+      });
+    }
   }
 
   // --- 6) 원본 입력에 산출물 역참조 기록 ---
@@ -452,6 +533,7 @@ export function applyPlan(
     personIds,
     orgIds,
     projectId: targetProjectId,
+    topicId,
   };
 }
 
@@ -543,5 +625,6 @@ export const LAYER_LABEL: Record<PlanLayer, string> = {
   organization: "조직",
   project: "프로젝트",
   task: "실행",
+  topic: "주제",
   note: "메모",
 };

@@ -2,7 +2,22 @@
 
 import { useState, useMemo, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-import { useNavStore, useNodeStore, useCategoryStore, usePrefStore } from '@/lib/store';
+import {
+  useNavStore,
+  useNodeStore,
+  useCategoryStore,
+  usePrefStore,
+  useFixedCostStore,
+  usePaymentMethodStore,
+} from '@/lib/store';
+import {
+  costsOnDate,
+  monthlyTotal,
+  totalsByMethod,
+  formatAmount,
+  describeMethod,
+  describeCycle,
+} from '@/lib/fixed-cost';
 import { useLocale } from '@/hooks/use-locale';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { format } from 'date-fns';
@@ -12,8 +27,16 @@ import {
   ChevronRight,
   Pin,
   Plus,
+  CalendarDays,
+  Wallet,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { NodeDetailSheet } from '@/components/shared/node-detail-sheet';
 import { toast } from 'sonner';
 import {
@@ -25,7 +48,17 @@ import {
   isSameDay,
   addMonths,
 } from 'date-fns';
-import type { Node } from '@/lib/types';
+import type { Node, FixedCost } from '@/lib/types';
+
+/**
+ * 캘린더 표시 모드.
+ * 'schedule'  — 기존 일정 타임라인 (기본값)
+ * 'fixedcost' — 고정비 결제만. 일정과 섞어 보여주지 않는다.
+ */
+type CalendarMode = 'schedule' | 'fixedcost';
+
+/** 결제수단이 없는 고정비(현금 등)에 쓰는 중립 회색 */
+const UNASSIGNED_METHOD_COLOR = '#94a3b8';
 
 // Month cells render a miniature day timeline, so the cell height has to be
 // large enough for a short event to stay legible: at 14px/hour a 1-hour block
@@ -73,9 +106,46 @@ export function CalendarView() {
   const [monthOffset, setMonthOffset] = useState(0);
   const [filterCats, setFilterCats] = useState<Set<string>>(new Set());
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [mode, setMode] = useState<CalendarMode>('schedule');
+  const [detailCost, setDetailCost] = useState<FixedCost | null>(null);
+
+  const costsRecord = useFixedCostStore((s) => s.costs);
+  const methods = usePaymentMethodStore((s) => s.methods);
 
   const dateLocale = language === 'ko' ? koLocale : undefined;
   const currentMonth = addMonths(new Date(), monthOffset);
+  const isFixedCostMode = mode === 'fixedcost';
+
+  const costList = useMemo(() => Object.values(costsRecord), [costsRecord]);
+
+  /** 결제수단 색상. 미지정(현금 등)은 중립 회색. */
+  const methodColor = useCallback(
+    (methodId: string | null) =>
+      (methodId ? methods[methodId]?.color : undefined) ??
+      UNASSIGNED_METHOD_COLOR,
+    [methods]
+  );
+
+  // 화면에 보이는 달의 고정비 합계 / 결제수단별 내역
+  const fcSummary = useMemo(() => {
+    if (!isFixedCostMode) return null;
+    const year = currentMonth.getFullYear();
+    const month = currentMonth.getMonth();
+    const byMethod = totalsByMethod(costList, year, month);
+    return {
+      total: monthlyTotal(costList, year, month),
+      rows: Array.from(byMethod.entries())
+        .map(([methodId, amount]) => ({
+          methodId,
+          amount,
+          label: describeMethod(methodId ? methods[methodId] : null),
+          color: methodColor(methodId),
+        }))
+        .sort((a, b) => b.amount - a.amount),
+    };
+    // currentMonth는 매 렌더 새 Date라 getTime()으로 고정한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFixedCostMode, costList, methods, methodColor, monthOffset]);
 
   // Build the calendar grid days (including padding from prev/next months)
   const calendarDays = useMemo(() => {
@@ -139,7 +209,8 @@ export function CalendarView() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Category legend chips */}
+      {/* Category legend chips — 일정 모드에서만. 고정비는 카테고리 필터와 무관하다. */}
+      {!isFixedCostMode && (
       <div className="flex flex-wrap gap-1.5">
         {Object.values(categories)
           .sort((a, b) => a.order - b.order)
@@ -162,6 +233,7 @@ export function CalendarView() {
             </button>
           ))}
       </div>
+      )}
 
       {/* Month navigation */}
       <div className="flex items-center justify-between">
@@ -186,17 +258,87 @@ export function CalendarView() {
             <ChevronRight className="size-4" />
           </Button>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            setMonthOffset(0);
-            setSelectedDate(new Date());
-          }}
-        >
-          {t.calendar.today}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setMonthOffset(0);
+              setSelectedDate(new Date());
+            }}
+          >
+            {t.calendar.today}
+          </Button>
+          {/* 일정 / 고정비 전용 모드 토글 */}
+          <div className="flex items-center rounded-lg border p-0.5">
+            {([
+              {
+                value: 'schedule' as CalendarMode,
+                icon: CalendarDays,
+                label: t.calendar.modeSchedule,
+              },
+              {
+                value: 'fixedcost' as CalendarMode,
+                icon: Wallet,
+                label: t.calendar.modeFixedCost,
+              },
+            ]).map(({ value, icon: Icon, label }) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={mode === value}
+                onClick={() => setMode(value)}
+                className={cn(
+                  'flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                  mode === value
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Icon className="size-3" />
+                <span className="hidden sm:inline">{label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
+
+      {/* 고정비 모드: 월 합계 + 결제수단별 내역 */}
+      {isFixedCostMode && fcSummary && (
+        <div className="rounded-lg border bg-muted/30 px-3 py-2">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              {t.calendar.fcMonthlyTotal}
+            </span>
+            <span className="text-base font-semibold tabular-nums">
+              {formatAmount(fcSummary.total)}
+            </span>
+          </div>
+          {fcSummary.rows.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+              {fcSummary.rows.map((row) => (
+                <span
+                  key={row.methodId ?? '__none__'}
+                  className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+                >
+                  <span
+                    className="size-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: row.color }}
+                  />
+                  <span>{row.label}</span>
+                  <span className="font-medium tabular-nums text-foreground">
+                    {formatAmount(row.amount)}
+                  </span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t.calendar.fcNoPayments}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Calendar grid */}
       <div className="overflow-hidden rounded-lg border">
@@ -218,15 +360,20 @@ export function CalendarView() {
             const isCurrentMonth =
               day.getMonth() === currentMonth.getMonth();
             const isToday = isSameDay(day, new Date());
-            const events = getEventsForDay(day);
+            const events = isFixedCostMode ? [] : getEventsForDay(day);
             const { placed, laneCount } = assignLanes(events);
+            const dayCosts = isFixedCostMode
+              ? costsOnDate(costList, day)
+              : [];
 
             return (
               <button
                 key={idx}
                 onClick={() => {
                   setSelectedDate(day);
-                  setCalendarSubView('daily');
+                  // 고정비 모드에는 일간 화면이 없다. 여기서 일간으로 넘기면
+                  // 일정 화면이 떠서 맥락이 끊기므로, 월 단위 조회만 유지한다.
+                  if (!isFixedCostMode) setCalendarSubView('daily');
                 }}
                 className={cn(
                   'relative border-b border-r p-1 text-left align-top transition-colors hover:bg-muted/50 last:border-r-0',
@@ -242,7 +389,38 @@ export function CalendarView() {
                 >
                   {format(day, 'd')}
                 </span>
-                {/* Mini vertical timeline for events (06:00-22:00) */}
+                {/* 고정비 모드: 시점 결제이므로 타임라인 대신 짧은 행으로 쌓는다 */}
+                {isFixedCostMode ? (
+                  <div className="mt-0.5 flex min-h-10 w-full flex-col gap-0.5">
+                    {dayCosts.map((cost) => (
+                      <div
+                        key={cost.id}
+                        title={`${cost.title} ${formatAmount(cost.amount)}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDetailCost(cost);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key !== 'Enter' && e.key !== ' ') return;
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setDetailCost(cost);
+                        }}
+                        className="flex cursor-pointer items-center gap-1 overflow-hidden rounded-sm px-1 py-0.5 text-[10px] leading-[13px] text-white"
+                        style={{
+                          backgroundColor: methodColor(cost.paymentMethodId),
+                        }}
+                      >
+                        <span className="truncate">{cost.title}</span>
+                        <span className="ml-auto shrink-0 tabular-nums">
+                          {formatAmount(cost.amount)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
                 <div
                   className="relative mt-0.5 w-full"
                   style={{ height: `${timelinePx}px` }}
@@ -288,6 +466,7 @@ export function CalendarView() {
                     </div>
                   ))}
                 </div>
+                )}
               </button>
             );
           })}
@@ -299,6 +478,50 @@ export function CalendarView() {
         open={detailNodeId !== null}
         onOpenChange={(o) => !o && setDetailNodeId(null)}
       />
+
+      {/* 고정비 결제 상세 (읽기 전용). 편집은 고정비 뷰에서 한다. */}
+      <Dialog
+        open={detailCost !== null}
+        onOpenChange={(o) => !o && setDetailCost(null)}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <span
+                className="size-2.5 shrink-0 rounded-full"
+                style={{
+                  backgroundColor: detailCost
+                    ? methodColor(detailCost.paymentMethodId)
+                    : UNASSIGNED_METHOD_COLOR,
+                }}
+              />
+              {detailCost?.title ?? t.calendar.fcDetailTitle}
+            </DialogTitle>
+          </DialogHeader>
+          {detailCost && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">{t.calendar.fcAmount}</dt>
+              <dd className="font-medium tabular-nums">
+                {formatAmount(detailCost.amount, detailCost.currency)}
+              </dd>
+              <dt className="text-muted-foreground">{t.calendar.fcCycle}</dt>
+              <dd>{describeCycle(detailCost)}</dd>
+              <dt className="text-muted-foreground">{t.calendar.fcMethod}</dt>
+              <dd>
+                {detailCost.paymentMethodId
+                  ? describeMethod(methods[detailCost.paymentMethodId])
+                  : t.calendar.fcUnassigned}
+              </dd>
+              {detailCost.memo && (
+                <>
+                  <dt className="text-muted-foreground">{t.calendar.fcMemo}</dt>
+                  <dd className="whitespace-pre-wrap">{detailCost.memo}</dd>
+                </>
+              )}
+            </dl>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

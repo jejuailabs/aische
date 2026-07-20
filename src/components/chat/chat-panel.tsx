@@ -10,6 +10,7 @@ import {
   usePersonStore,
   useOrgStore,
   useCaptureStore,
+  useTopicStore,
 } from '@/lib/store';
 import {
   buildPlan,
@@ -44,13 +45,13 @@ import {
   FolderOpen,
   Check,
   Sparkles,
+  Layers,
+  TrendingUp,
   Building2,
   FileText,
   Minus,
   RotateCcw,
   GripHorizontal,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import {
   useFloatingWindow,
@@ -66,6 +67,7 @@ import { toast } from 'sonner';
 import type { Node } from '@/lib/types';
 import { VoiceButton } from './voice-input';
 import { describeRecurrence } from '@/lib/recurrence';
+import { shouldPromoteTopic } from '@/lib/types';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -80,7 +82,7 @@ interface ProjectMatchData {
 
 interface ChatMessage {
   id: string;
-  role: 'user' | 'ai' | 'draft' | 'project_match' | 'plan';
+  role: 'user' | 'ai' | 'draft' | 'project_match' | 'plan' | 'promote';
   content: string;
   /** Reference to node stored in Zustand — keeps UI in sync after edits / clarification */
   draftNodeId?: string;
@@ -92,6 +94,8 @@ interface ChatMessage {
   planApplied?: boolean;
   /** 원본 입력 텍스트 (적용 시 CapturedInput으로 보존) */
   rawText?: string;
+  /** 프로젝트 승격을 제안할 주제 id */
+  promoteTopicId?: string;
 }
 
 interface ClarificationAwaiting {
@@ -141,7 +145,6 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       minW: 320,
       minH: 240,
     });
-  const [minimized, setMinimized] = useState(false);
 
   /* ---- local state ---- */
   const [open, setOpen] = useState(false);
@@ -187,6 +190,11 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   const findOrg = useOrgStore((s) => s.findByName);
   const addCapture = useCaptureStore((s) => s.addCapture);
   const updateCapture = useCaptureStore((s) => s.updateCapture);
+  const topics = useTopicStore((s) => s.topics);
+  const addTopic = useTopicStore((s) => s.addTopic);
+  const updateTopic = useTopicStore((s) => s.updateTopic);
+  const findTopic = useTopicStore((s) => s.findByLabel);
+  const promoteTopic = useTopicStore((s) => s.promote);
 
   /* ---- derived ---- */
   const draftCount = Object.values(nodes).filter(
@@ -365,6 +373,11 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
         findOrg,
         getPersonById: (id) => usePersonStore.getState().people[id],
         getOrgById: (id) => useOrgStore.getState().orgs[id],
+        addTopic,
+        updateTopic,
+        findTopic,
+        findTopicById: (id) => useTopicStore.getState().topics[id],
+        getTopicById: (id) => useTopicStore.getState().topics[id],
       });
 
       setMessages((prev) =>
@@ -378,6 +391,22 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       toast.success(
         parts.length ? `저장 완료 — ${parts.join(', ')}` : '저장 완료',
       );
+
+      // 주제에 행동이 붙어 승격 조건을 넘겼으면 제안한다 (자동 생성하지 않음)
+      if (result.topicId) {
+        const topic = useTopicStore.getState().topics[result.topicId];
+        if (topic && shouldPromoteTopic(topic)) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: 'promote-' + Date.now(),
+              role: 'promote' as const,
+              content: topic.label,
+              promoteTopicId: topic.id,
+            },
+          ]);
+        }
+      }
     },
     [
       messages,
@@ -391,8 +420,37 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       updateCapture,
       findPerson,
       findOrg,
+      addTopic,
+      updateTopic,
+      findTopic,
     ],
   );
+
+  /** 주제 → 프로젝트 승격 */
+  const handlePromote = useCallback(
+    (msgId: string, topicId: string) => {
+      const topic = useTopicStore.getState().topics[topicId];
+      const projectId = promoteTopic(topicId);
+      if (!projectId) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                id: m.id,
+                role: 'ai' as const,
+                content: `'${topic?.label}' 을(를) 프로젝트로 만들었습니다. 모아둔 메모는 프로젝트 설명으로 옮겼습니다.`,
+              }
+            : m,
+        ),
+      );
+      toast.success('프로젝트로 승격했습니다');
+    },
+    [promoteTopic],
+  );
+
+  const handleDismissPromote = useCallback((msgId: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
+  }, []);
 
   const handleDiscardPlan = useCallback((msgId: string) => {
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
@@ -741,6 +799,9 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               id: o.id,
               name: o.name,
             })),
+            topics: Object.values(topics)
+              .filter((tp) => tp.status === 'collecting')
+              .map((tp) => ({ id: tp.id, label: tp.label })),
             upcoming,
             counts: {
               일정: Object.values(nodes).length,
@@ -762,6 +823,8 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
           projects,
           findPerson,
           findOrg,
+          findTopic,
+          findTopicById: (id) => useTopicStore.getState().topics[id],
         });
         setMessages((prev) =>
           prev.map((m) =>
@@ -839,6 +902,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       case 'organization': return Building2;
       case 'project': return FolderOpen;
       case 'task': return ListChecks;
+      case 'topic': return Layers;
       default: return FileText;
     }
   };
@@ -851,6 +915,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       case 'organization': return 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40';
       case 'project': return 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40';
       case 'task': return 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40';
+      case 'topic': return 'text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40';
       default: return 'text-muted-foreground bg-muted';
     }
   };
@@ -859,6 +924,60 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
     if (action === 'link') return '기존에 연결';
     if (action === 'merge') return '기존에 배치';
     return '신규';
+  };
+
+  /** 주제 → 프로젝트 승격 제안 카드 */
+  const renderPromoteCard = (msg: ChatMessage) => {
+    const topic = topics[msg.promoteTopicId!];
+    if (!topic) return null;
+    return (
+      <div
+        key={msg.id}
+        className="rounded-xl border border-teal-500/30 bg-teal-50 p-3 dark:bg-teal-950/30"
+      >
+        <div className="mb-2 flex items-center gap-2">
+          <TrendingUp className="size-3.5 text-teal-600 dark:text-teal-400" />
+          <span className="text-xs font-medium text-teal-700 dark:text-teal-300">
+            프로젝트로 만들까요?
+          </span>
+        </div>
+        <p className="text-sm font-medium">{topic.label}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          메모 {topic.notes.length}건 · 일정/할일 {topic.nodeIds.length}건이 모였고,
+          이제 실제 일정이 생겼습니다.
+        </p>
+        {topic.notes.length > 0 && (
+          <ul className="mt-2 space-y-0.5 rounded-lg bg-background/60 p-2">
+            {topic.notes.slice(-3).map((n) => (
+              <li
+                key={n.id}
+                className="truncate text-[11px] text-muted-foreground"
+              >
+                · {n.text}
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            size="sm"
+            className="h-7 gap-1 bg-teal-600 text-xs text-white hover:bg-teal-700"
+            onClick={() => handlePromote(msg.id, topic.id)}
+          >
+            <FolderOpen className="size-3" />
+            프로젝트로 만들기
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-muted-foreground"
+            onClick={() => handleDismissPromote(msg.id)}
+          >
+            더 모으기
+          </Button>
+        </div>
+      </div>
+    );
   };
 
   /** AI가 분해한 저장 계획 카드 */
@@ -875,7 +994,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       {},
     );
 
-    const order: PlanLayer[] = ['schedule', 'task', 'person', 'organization', 'project', 'note'];
+    const order: PlanLayer[] = ['schedule', 'task', 'topic', 'note', 'person', 'organization', 'project'];
     const enabledCount = plan.items.filter((i) => i.enabled).length;
 
     return (
@@ -1432,13 +1551,13 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               left: rect.x,
               top: rect.y,
               width: rect.w,
-              height: minimized ? undefined : rect.h,
+              height: rect.h,
             }}
           >
             {/* ---- 타이틀 바 (드래그 핸들) ---- */}
             <div
               {...dragProps}
-              onDoubleClick={() => setMinimized((m) => !m)}
+              onDoubleClick={() => setOpen(false)}
               className={cn(
                 // min-h로 고정해 버튼/배지가 눌리거나 잘리지 않게 한다
                 'flex h-11 shrink-0 items-center gap-2 border-b bg-muted/40 px-3 select-none',
@@ -1469,20 +1588,8 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
                   <RotateCcw className="size-3.5" />
                 </button>
                 <button
-                  title={minimized ? '펼치기' : '접기'}
-                  aria-label={minimized ? '펼치기' : '접기'}
-                  onClick={() => setMinimized((m) => !m)}
-                  className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                >
-                  {minimized ? (
-                    <ChevronUp className="size-4" />
-                  ) : (
-                    <ChevronDown className="size-4" />
-                  )}
-                </button>
-                <button
-                  title="아이콘으로 최소화"
-                  aria-label="아이콘으로 최소화"
+                  title="아이콘으로 접기"
+                  aria-label="아이콘으로 접기"
                   onClick={() => setOpen(false)}
                   className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
                 >
@@ -1491,10 +1598,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
                 <button
                   title="닫기"
                   aria-label="닫기"
-                  onClick={() => {
-                    setOpen(false);
-                    setMinimized(false);
-                  }}
+                  onClick={() => setOpen(false)}
                   className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground"
                 >
                   <X className="size-4" />
@@ -1502,8 +1606,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               </div>
             </div>
 
-            {!minimized && (
-              <>
+            <>
                 <ScrollArea className="min-h-0 flex-1 px-4 py-3">
                   {hasMessages ? (
                     messageList
@@ -1515,12 +1618,10 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
                 </ScrollArea>
                 {attachedChip}
                 {inputBar}
-              </>
-            )}
+            </>
 
             {/* ---- 8방향 리사이즈 손잡이 ---- */}
-            {!minimized &&
-              RESIZE_HANDLES.map(({ dir, className }) => (
+            {RESIZE_HANDLES.map(({ dir, className }) => (
                 <div
                   key={dir}
                   {...resizeProps(dir)}

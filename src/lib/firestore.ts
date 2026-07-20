@@ -41,6 +41,11 @@ import type {
   Person,
   Organization,
   CapturedInput,
+  Topic,
+  PaymentMethod,
+  FixedCost,
+  DiaryEntry,
+  RelationshipLog,
 } from "./types";
 
 // ─── helpers ────────────────────────────────────────
@@ -163,6 +168,7 @@ function firestoreToNode(data: DocumentData): Node {
     autoCompleteFromChildren: data.autoCompleteFromChildren ?? true,
     personIds: data.personIds ?? [],
     orgIds: data.orgIds ?? [],
+    topicId: data.topicId ?? null,
     capturedInputId: data.capturedInputId ?? null,
   };
 }
@@ -541,6 +547,348 @@ export async function deleteOrganization(
   id: string
 ): Promise<void> {
   await deleteDoc(orgDoc(uid, id));
+}
+
+// ═══════════════════════════════════════════════════════
+// API: PaymentMethods (결제수단 — 카드번호 전체는 저장 안 함)
+// ═══════════════════════════════════════════════════════
+
+const pmCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "paymentMethods");
+const pmDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "paymentMethods", id);
+
+function pmToFirestore(m: PaymentMethod): DocumentData {
+  return {
+    ...m,
+    // 방어: 혹시라도 4자리 넘게 들어오면 잘라서 저장
+    last4: (m.last4 ?? "").replace(/\D/g, "").slice(-4),
+    createdAt: dateToTs(m.createdAt),
+    updatedAt: dateToTs(m.updatedAt),
+  };
+}
+
+function firestoreToPm(data: DocumentData): PaymentMethod {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    issuer: data.issuer ?? "",
+    label: data.label ?? "",
+    last4: (data.last4 ?? "").toString().slice(-4),
+    type: data.type ?? "credit",
+    billingDay: data.billingDay ?? null,
+    color: data.color ?? "#6366f1",
+    active: data.active ?? true,
+    createdAt: toDate(data.createdAt),
+    updatedAt: toDate(data.updatedAt),
+  };
+}
+
+export async function fetchAllPaymentMethods(
+  uid: string
+): Promise<PaymentMethod[]> {
+  const snap = await getDocs(pmCol(uid));
+  return snap.docs.map((d) => firestoreToPm({ id: d.id, ...d.data() }));
+}
+
+export async function savePaymentMethod(
+  uid: string,
+  m: PaymentMethod
+): Promise<void> {
+  await setDoc(pmDoc(uid, m.id), pmToFirestore(m));
+}
+
+export async function updatePaymentMethodFields(
+  uid: string,
+  id: string,
+  updates: Partial<PaymentMethod>
+): Promise<void> {
+  const mapped: Record<string, unknown> = {
+    ...updates,
+    updatedAt: dateToTs(new Date()),
+  };
+  if (updates.last4 !== undefined) {
+    mapped.last4 = (updates.last4 ?? "").replace(/\D/g, "").slice(-4);
+  }
+  await updateDoc(pmDoc(uid, id), mapped as DocumentData);
+}
+
+export async function deletePaymentMethod(
+  uid: string,
+  id: string
+): Promise<void> {
+  await deleteDoc(pmDoc(uid, id));
+}
+
+// ═══════════════════════════════════════════════════════
+// API: FixedCosts (구독·고정비)
+// ═══════════════════════════════════════════════════════
+
+const fcCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "fixedCosts");
+const fcDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "fixedCosts", id);
+
+function fcToFirestore(c: FixedCost): DocumentData {
+  return {
+    ...c,
+    startedAt: dateToTs(c.startedAt),
+    endedAt: dateToTs(c.endedAt),
+    createdAt: dateToTs(c.createdAt),
+    updatedAt: dateToTs(c.updatedAt),
+  };
+}
+
+function firestoreToFc(data: DocumentData): FixedCost {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    title: data.title ?? "",
+    amount: data.amount ?? 0,
+    currency: data.currency ?? "KRW",
+    cycle: data.cycle ?? "monthly",
+    paymentDay: data.paymentDay ?? 1,
+    paymentMonth: data.paymentMonth ?? null,
+    paymentMethodId: data.paymentMethodId ?? null,
+    categoryId: data.categoryId ?? null,
+    memo: data.memo ?? "",
+    startedAt: toDate(data.startedAt),
+    endedAt: data.endedAt ? toDate(data.endedAt) : null,
+    active: data.active ?? true,
+    sourceInputId: data.sourceInputId ?? null,
+    createdAt: toDate(data.createdAt),
+    updatedAt: toDate(data.updatedAt),
+  };
+}
+
+export async function fetchAllFixedCosts(uid: string): Promise<FixedCost[]> {
+  const snap = await getDocs(fcCol(uid));
+  return snap.docs.map((d) => firestoreToFc({ id: d.id, ...d.data() }));
+}
+
+export async function saveFixedCost(uid: string, c: FixedCost): Promise<void> {
+  await setDoc(fcDoc(uid, c.id), fcToFirestore(c));
+}
+
+export async function updateFixedCostFields(
+  uid: string,
+  id: string,
+  updates: Partial<FixedCost>
+): Promise<void> {
+  const mapped: Record<string, unknown> = {
+    ...updates,
+    updatedAt: dateToTs(new Date()),
+  };
+  if (updates.startedAt) mapped.startedAt = dateToTs(updates.startedAt);
+  if (updates.endedAt !== undefined) mapped.endedAt = dateToTs(updates.endedAt);
+  await updateDoc(fcDoc(uid, id), mapped as DocumentData);
+}
+
+export async function deleteFixedCost(uid: string, id: string): Promise<void> {
+  await deleteDoc(fcDoc(uid, id));
+}
+
+// ═══════════════════════════════════════════════════════
+// API: DiaryEntries (일기 — 원문 보존)
+// ═══════════════════════════════════════════════════════
+
+const diaryCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "diary");
+const diaryDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "diary", id);
+
+function diaryToFirestore(e: DiaryEntry): DocumentData {
+  return {
+    ...e,
+    entryDate: dateToTs(e.entryDate),
+    createdAt: dateToTs(e.createdAt),
+    updatedAt: dateToTs(e.updatedAt),
+  };
+}
+
+function firestoreToDiary(data: DocumentData): DiaryEntry {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    rawText: data.rawText ?? "",
+    channel: data.channel ?? "text",
+    entryDate: toDate(data.entryDate),
+    title: data.title ?? "",
+    mood: data.mood ?? null,
+    emotions: data.emotions ?? [],
+    personIds: data.personIds ?? [],
+    orgIds: data.orgIds ?? [],
+    places: data.places ?? [],
+    events: data.events ?? [],
+    tags: data.tags ?? [],
+    analyzed: data.analyzed ?? false,
+    createdAt: toDate(data.createdAt),
+    updatedAt: toDate(data.updatedAt),
+  };
+}
+
+export async function fetchAllDiaryEntries(uid: string): Promise<DiaryEntry[]> {
+  const snap = await getDocs(diaryCol(uid));
+  return snap.docs.map((d) => firestoreToDiary({ id: d.id, ...d.data() }));
+}
+
+export async function saveDiaryEntry(uid: string, e: DiaryEntry): Promise<void> {
+  await setDoc(diaryDoc(uid, e.id), diaryToFirestore(e));
+}
+
+export async function updateDiaryEntryFields(
+  uid: string,
+  id: string,
+  updates: Partial<DiaryEntry>
+): Promise<void> {
+  const mapped: Record<string, unknown> = {
+    ...updates,
+    updatedAt: dateToTs(new Date()),
+  };
+  if (updates.entryDate) mapped.entryDate = dateToTs(updates.entryDate);
+  await updateDoc(diaryDoc(uid, id), mapped as DocumentData);
+}
+
+export async function deleteDiaryEntry(uid: string, id: string): Promise<void> {
+  await deleteDoc(diaryDoc(uid, id));
+}
+
+// ═══════════════════════════════════════════════════════
+// API: RelationshipLogs (사람과의 상호작용 기록)
+// ═══════════════════════════════════════════════════════
+
+const relCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "relationshipLogs");
+const relDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "relationshipLogs", id);
+
+function relToFirestore(l: RelationshipLog): DocumentData {
+  return {
+    ...l,
+    occurredAt: dateToTs(l.occurredAt),
+    createdAt: dateToTs(l.createdAt),
+  };
+}
+
+function firestoreToRel(data: DocumentData): RelationshipLog {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    personId: data.personId ?? "",
+    diaryEntryId: data.diaryEntryId ?? null,
+    occurredAt: toDate(data.occurredAt),
+    event: data.event ?? "",
+    feeling: data.feeling ?? null,
+    sentiment: data.sentiment ?? 0,
+    quote: data.quote ?? null,
+    createdAt: toDate(data.createdAt),
+  };
+}
+
+export async function fetchAllRelationshipLogs(
+  uid: string
+): Promise<RelationshipLog[]> {
+  const snap = await getDocs(relCol(uid));
+  return snap.docs.map((d) => firestoreToRel({ id: d.id, ...d.data() }));
+}
+
+export async function saveRelationshipLog(
+  uid: string,
+  l: RelationshipLog
+): Promise<void> {
+  await setDoc(relDoc(uid, l.id), relToFirestore(l));
+}
+
+export async function updateRelationshipLogFields(
+  uid: string,
+  id: string,
+  updates: Partial<RelationshipLog>
+): Promise<void> {
+  const mapped: Record<string, unknown> = { ...updates };
+  if (updates.occurredAt) mapped.occurredAt = dateToTs(updates.occurredAt);
+  await updateDoc(relDoc(uid, id), mapped as DocumentData);
+}
+
+export async function deleteRelationshipLog(
+  uid: string,
+  id: string
+): Promise<void> {
+  await deleteDoc(relDoc(uid, id));
+}
+
+// ═══════════════════════════════════════════════════════
+// API: Topics (주제 — 일정 없는 입력이 쌓이는 곳)
+// ═══════════════════════════════════════════════════════
+
+const topicsCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "topics");
+const topicDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "topics", id);
+
+function topicToFirestore(t: Topic): DocumentData {
+  return {
+    ...t,
+    notes: (t.notes ?? []).map((n) => ({
+      ...n,
+      createdAt: dateToTs(n.createdAt),
+    })),
+    createdAt: dateToTs(t.createdAt),
+    updatedAt: dateToTs(t.updatedAt),
+  };
+}
+
+function firestoreToTopic(data: DocumentData): Topic {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    label: data.label ?? "",
+    aliases: data.aliases ?? [],
+    notes: Array.isArray(data.notes)
+      ? data.notes.map((n: DocumentData) => ({
+          id: n.id,
+          text: n.text ?? "",
+          capturedInputId: n.capturedInputId ?? null,
+          createdAt: toDate(n.createdAt),
+        }))
+      : [],
+    nodeIds: data.nodeIds ?? [],
+    sourceInputIds: data.sourceInputIds ?? [],
+    status: data.status ?? "collecting",
+    promotedProjectId: data.promotedProjectId ?? null,
+    createdAt: toDate(data.createdAt),
+    updatedAt: toDate(data.updatedAt),
+  };
+}
+
+export async function fetchAllTopics(uid: string): Promise<Topic[]> {
+  const snap = await getDocs(topicsCol(uid));
+  return snap.docs.map((d) => firestoreToTopic({ id: d.id, ...d.data() }));
+}
+
+export async function saveTopic(uid: string, t: Topic): Promise<void> {
+  await setDoc(topicDoc(uid, t.id), topicToFirestore(t));
+}
+
+export async function updateTopicFields(
+  uid: string,
+  id: string,
+  updates: Partial<Topic>
+): Promise<void> {
+  const mapped: Record<string, unknown> = {
+    ...updates,
+    updatedAt: dateToTs(new Date()),
+  };
+  if (updates.notes) {
+    mapped.notes = updates.notes.map((n) => ({
+      ...n,
+      createdAt: dateToTs(n.createdAt),
+    }));
+  }
+  await updateDoc(topicDoc(uid, id), mapped as DocumentData);
+}
+
+export async function deleteTopic(uid: string, id: string): Promise<void> {
+  await deleteDoc(topicDoc(uid, id));
 }
 
 // ═══════════════════════════════════════════════════════

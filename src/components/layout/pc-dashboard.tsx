@@ -20,6 +20,9 @@ import {
   ScrollText,
   Users,
   Database,
+  Wallet,
+  FileBarChart,
+  BookOpen,
 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -38,15 +41,21 @@ import { AdminView } from '@/components/admin/admin-view';
 import { ActivityLogView } from '@/components/log/activity-log-view';
 import { PeopleView } from '@/components/people/people-view';
 import { DataView } from '@/components/data/data-view';
+import { FixedCostView } from '@/components/fixedcost/fixed-cost-view';
+import { ProjectReportView } from '@/components/report/project-report-view';
+import { DiaryView } from '@/components/diary/diary-view';
 import { ChatPanel } from '@/components/chat/chat-panel';
 import { usePrefStore } from '@/lib/store';
 
-const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'drafts' | 'settings' | 'people' }[] = [
+const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'drafts' | 'settings' | 'people' | 'fixedCost' | 'report' | 'diary' }[] = [
   { view: 'calendar', icon: CalendarDays, labelKey: 'calendar' },
   { view: 'todo', icon: CheckSquare, labelKey: 'todo' },
   { view: 'mandarat', icon: LayoutGrid, labelKey: 'mandarat' },
   { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
+  { view: 'fixedcost', icon: Wallet, labelKey: 'fixedCost' },
   { view: 'people', icon: Users, labelKey: 'people' },
+  { view: 'diary', icon: BookOpen, labelKey: 'diary' },
+  { view: 'report', icon: FileBarChart, labelKey: 'report' },
   { view: 'drafts', icon: FileText, labelKey: 'drafts' },
 ];
 
@@ -70,6 +79,12 @@ function ViewSwitcher({ view }: { view: AppView }) {
       return <PeopleView />;
     case 'data':
       return <DataView />;
+    case 'fixedcost':
+      return <FixedCostView />;
+    case 'report':
+      return <ProjectReportView />;
+    case 'diary':
+      return <DiaryView />;
     case 'settings':
       return <SettingsView />;
     default:
@@ -98,6 +113,9 @@ export function PcDashboard() {
     log: t.log.title,
     people: t.people.title,
     data: t.data.title,
+    fixedcost: t.fixedCost.title,
+    report: t.nav.report,
+    diary: t.diary.title,
   };
 
   const headerAction =
