@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { useNavStore, useNodeStore, useCategoryStore, usePrefStore } from '@/lib/store';
 import { useLocale } from '@/hooks/use-locale';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { format } from 'date-fns';
 import { ko as koLocale } from 'date-fns/locale';
 import {
@@ -31,9 +32,13 @@ import type { Node } from '@/lib/types';
 // is 14px tall, which fits a 10px label.
 const DAY_START_HOUR = 6;
 const DAY_END_HOUR = 22;
-const HOUR_PX = 14;
-const TIMELINE_PX = (DAY_END_HOUR - DAY_START_HOUR) * HOUR_PX;
-const MIN_BAR_PX = 14;
+const DAY_HOURS = DAY_END_HOUR - DAY_START_HOUR;
+// 데스크톱은 14px/시간(=224px 셀)로 여유 있게, 모바일은 6px/시간(=96px 셀)로 줄여
+// 스크롤 없이 한 달이 최대한 한 화면에 들어오게 한다.
+const HOUR_PX_DESKTOP = 14;
+const HOUR_PX_MOBILE = 6;
+const MIN_BAR_PX_DESKTOP = 14;
+const MIN_BAR_PX_MOBILE = 8;
 const GUIDE_HOURS = [10, 14, 18];
 
 /** Spread overlapping events across side-by-side lanes so none are hidden. */
@@ -105,6 +110,12 @@ export function CalendarView() {
     });
   };
 
+  // 모바일에서는 달력 한 칸이 너무 길어지지 않도록 시간당 픽셀을 줄인다.
+  const isMobile = useIsMobile();
+  const hourPx = isMobile ? HOUR_PX_MOBILE : HOUR_PX_DESKTOP;
+  const minBarPx = isMobile ? MIN_BAR_PX_MOBILE : MIN_BAR_PX_DESKTOP;
+  const timelinePx = DAY_HOURS * hourPx;
+
   // Event bar geometry in px, so a bar's size tracks its real duration
   // instead of collapsing with the cell.
   const eventBarStyle = (node: Node, lane: number, laneCount: number) => {
@@ -115,8 +126,8 @@ export function CalendarView() {
     const endH = Math.min(Math.max(rawEnd, startH), DAY_END_HOUR);
     const laneWidth = 100 / laneCount;
     return {
-      top: `${(startH - DAY_START_HOUR) * HOUR_PX}px`,
-      height: `${Math.max((endH - startH) * HOUR_PX, MIN_BAR_PX)}px`,
+      top: `${(startH - DAY_START_HOUR) * hourPx}px`,
+      height: `${Math.max((endH - startH) * hourPx, minBarPx)}px`,
       left: `${lane * laneWidth}%`,
       width: `calc(${laneWidth}% - 2px)`,
     };
@@ -234,14 +245,14 @@ export function CalendarView() {
                 {/* Mini vertical timeline for events (06:00-22:00) */}
                 <div
                   className="relative mt-0.5 w-full"
-                  style={{ height: `${TIMELINE_PX}px` }}
+                  style={{ height: `${timelinePx}px` }}
                 >
                   {/* Hour guides make an event's time position readable at a glance */}
                   {GUIDE_HOURS.map((hour) => (
                     <div
                       key={hour}
                       className="absolute inset-x-0 border-t border-dashed border-border/40"
-                      style={{ top: `${(hour - DAY_START_HOUR) * HOUR_PX}px` }}
+                      style={{ top: `${(hour - DAY_START_HOUR) * hourPx}px` }}
                     />
                   ))}
                   {placed.map(({ evt, lane }) => (

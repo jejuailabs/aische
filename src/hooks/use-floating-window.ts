@@ -53,39 +53,36 @@ export function useFloatingWindow({
   const [interacting, setInteracting] = useState(false);
 
   // 최초 1회: 저장값 복원 또는 기본값 계산 (SSR 회피 위해 effect에서)
-  // 뷰포트가 아직 0이면 실제 크기가 잡힐 때까지 프레임을 미룬다.
+  //
+  // 주의: requestAnimationFrame에 의존해 초기화를 미루면 안 된다.
+  // 백그라운드 탭에서는 rAF가 아예 실행되지 않아 창이 영영 안 뜬다.
+  // 그래서 뷰포트를 못 재도 폴백값으로 일단 배치하고, 실제 크기는
+  // 아래 resize 리스너가 잡아서 화면 안으로 보정한다.
   useEffect(() => {
-    let raf = 0;
-    const init = () => {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      if (vw <= 0 || vh <= 0) {
-        raf = requestAnimationFrame(init);
-        return;
-      }
-      let saved: Rect | null = null;
-      try {
-        const raw = localStorage.getItem(storageKey);
-        if (raw) {
-          const p = JSON.parse(raw);
-          if (
-            typeof p?.x === "number" &&
-            typeof p?.y === "number" &&
-            typeof p?.w === "number" &&
-            typeof p?.h === "number"
-          ) {
-            saved = p;
-          }
+    const vw = window.innerWidth || document.documentElement.clientWidth || 1280;
+    const vh =
+      window.innerHeight || document.documentElement.clientHeight || 720;
+
+    let saved: Rect | null = null;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (
+          typeof p?.x === "number" &&
+          typeof p?.y === "number" &&
+          typeof p?.w === "number" &&
+          typeof p?.h === "number"
+        ) {
+          saved = p;
         }
-      } catch {
-        /* 저장값이 깨졌으면 무시하고 기본값 사용 */
       }
-      setRect(
-        clampToViewport(saved ?? defaultRect({ w: vw, h: vh }), minW, minH)
-      );
-    };
-    init();
-    return () => cancelAnimationFrame(raf);
+    } catch {
+      /* 저장값이 깨졌으면 무시하고 기본값 사용 */
+    }
+    setRect(
+      clampToViewport(saved ?? defaultRect({ w: vw, h: vh }), minW, minH)
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 

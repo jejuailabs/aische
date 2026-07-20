@@ -364,11 +364,17 @@ export function VoiceButton({ onTranscript }: VoiceButtonProps) {
   const ariaLabel = isRecording ? t.voice.tapToStop : t.voice.startRecording;
 
   return (
-    <div className="relative flex items-center justify-center" style={{ width: CANVAS_SIZE, height: CANVAS_SIZE }}>
-      {/* Canvas visualizer – behind the button */}
+    // 래퍼는 버튼 크기만 차지한다. 시각화 캔버스(120px)를 레이아웃에 두면
+    // 입력 바 전체가 그만큼 높아지므로, 캔버스는 버튼 중앙 기준으로 띄워서 겹친다.
+    <div
+      className="relative flex shrink-0 items-center justify-center"
+      style={{ width: BUTTON_SIZE, height: BUTTON_SIZE }}
+    >
+      {/* Canvas visualizer – 버튼 뒤에 겹쳐서 표시 (레이아웃 공간 차지 안 함) */}
       <canvas
         ref={canvasRef}
-        className="absolute inset-0 pointer-events-none"
+        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+        style={{ width: CANVAS_SIZE, height: CANVAS_SIZE }}
         aria-hidden="true"
       />
 

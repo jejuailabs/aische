@@ -1323,8 +1323,8 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   const inputBar = (
     <div
       className={cn(
-        'border-t bg-card px-3 py-2.5',
-        !isFloating && 'pb-[max(0.625rem,env(safe-area-inset-bottom))]',
+        'shrink-0 border-t bg-card px-3 py-2',
+        !isFloating && 'pb-[max(0.5rem,env(safe-area-inset-bottom))]',
       )}
     >
       <div className="flex items-center gap-2">
@@ -1440,7 +1440,8 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               {...dragProps}
               onDoubleClick={() => setMinimized((m) => !m)}
               className={cn(
-                'flex shrink-0 items-center gap-2 border-b bg-muted/40 px-3 py-2 select-none',
+                // min-h로 고정해 버튼/배지가 눌리거나 잘리지 않게 한다
+                'flex h-11 shrink-0 items-center gap-2 border-b bg-muted/40 px-3 select-none',
                 interacting ? 'cursor-grabbing' : 'cursor-grab',
               )}
             >
@@ -1533,43 +1534,64 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   }
 
   /* ================================================================ */
-  /*  변형 2: 하단 고정 바 (모바일)                                     */
+  /*  변형 2: 하단 시트 (모바일)                                        */
   /* ================================================================ */
+  //
+  // 메시지 영역이 레이아웃을 밀어내면 캘린더가 눌리므로, 시트는 본문 위로
+  // 겹쳐서(overlay) 올라온다. 입력 바만 항상 자리를 차지한다.
 
   return (
-    <div className="flex flex-col">
+    <>
+      {/* 펼쳐졌을 때 뒤 배경 — 탭하면 닫힘 */}
       <AnimatePresence>
         {open && hasMessages && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="overflow-hidden border-t bg-card"
-          >
-            <div className="flex items-center justify-between border-b px-4 py-2">
-              <div className="flex items-center gap-2">
-                <MessageCircle className="size-3.5 text-primary" />
-                <span className="text-xs font-semibold">{t.chat.title}</span>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6"
-                onClick={() => setOpen(false)}
-              >
-                <X className="size-3.5" />
-              </Button>
-            </div>
-            <ScrollArea className="max-h-[40vh] px-4 py-3">
-              {messageList}
-            </ScrollArea>
-          </motion.div>
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            data-testid="chat-backdrop"
+            className="fixed inset-0 z-30 bg-black/20"
+            onClick={() => setOpen(false)}
+          />
         )}
       </AnimatePresence>
 
-      {attachedChip}
-      {inputBar}
-    </div>
+      <div className="relative z-40 flex flex-col">
+        {/* 메시지 시트 — 입력 바 위로 겹쳐 올라온다 */}
+        <AnimatePresence>
+          {open && hasMessages && (
+            <motion.div
+              initial={{ y: 12, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 12, opacity: 0 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              data-testid="chat-sheet"
+              className="absolute bottom-full inset-x-0 flex max-h-[55vh] flex-col overflow-hidden rounded-t-2xl border-x border-t bg-card shadow-2xl"
+            >
+              <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
+                <div className="flex items-center gap-2">
+                  <MessageCircle className="size-3.5 text-primary" />
+                  <span className="text-xs font-semibold">{t.chat.title}</span>
+                </div>
+                <button
+                  onClick={() => setOpen(false)}
+                  aria-label="닫기"
+                  className="flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+              <ScrollArea className="min-h-0 flex-1 px-4 py-3">
+                {messageList}
+              </ScrollArea>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {attachedChip}
+        {inputBar}
+      </div>
+    </>
   );
 }

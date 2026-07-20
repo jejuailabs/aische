@@ -176,7 +176,7 @@ export function MobileShell() {
         )}
       </main>
 
-      {/* AI Chat input bar — always visible above nav */}
+      {/* AI 채팅 — 입력 바만 자리를 차지하고, 메시지 시트는 본문 위로 겹쳐 올라온다 */}
       <ChatPanel />
 
       {/* Bottom tab bar */}
