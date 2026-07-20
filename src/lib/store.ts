@@ -22,6 +22,7 @@ import type {
   CapturedInput,
 } from "@/lib/types";
 import { generateId, computeRollup } from "@/lib/services";
+import { occursOn, occurrenceTimes } from "@/lib/recurrence";
 import * as fs from "@/lib/firestore";
 
 // ─── Firestore 쓰기 헬퍼 (fire-and-forget, 에러 콘솔) ───
@@ -273,15 +274,17 @@ export const useNodeStore = create<NodeState>((set, get) => ({
   getNodesByProject: (projectId) =>
     Object.values(get().nodes).filter((n) => n.projectId === projectId),
   getNodesByDate: (date) => {
-    const dayStart = new Date(date);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(date);
-    dayEnd.setHours(23, 59, 59, 999);
-    return Object.values(get().nodes).filter((n) => {
-      if (!n.schedule) return false;
-      const start = new Date(n.schedule.startAt);
-      return start >= dayStart && start <= dayEnd;
-    });
+    // 반복 일정은 회차를 저장하지 않으므로 조회 시점에 계산해서 펼친다.
+    // 이 함수가 캘린더/투두/대시보드 공통 관문이라 여기 한 곳만 고치면 된다.
+    return Object.values(get().nodes)
+      .filter((n) => n.schedule && occursOn(n.schedule, date))
+      .map((n) => {
+        if (!n.schedule?.recurrence) return n;
+        // 반복 회차는 원본의 시각을 유지한 채 날짜만 그 날로 옮겨 반환한다.
+        // (원본은 건드리지 않는다 — 화면 표시용 파생 객체)
+        const { startAt, endAt } = occurrenceTimes(n.schedule, date);
+        return { ...n, schedule: { ...n.schedule, startAt, endAt } };
+      });
   },
   getProjectNodes: (projectId) =>
     Object.values(get().nodes).filter(

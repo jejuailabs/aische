@@ -1,7 +1,7 @@
 // 날짜 표현 파서 검증
 //   node --experimental-strip-types scripts/test-date-expr.mjs
 // src/lib/date-expr.ts 의 실제 구현을 그대로 테스트한다.
-import { resolveDateExpr } from "../src/lib/date-expr.ts";
+import { resolveDateExpr, toStartEnd } from "../src/lib/date-expr.ts";
 
 // 2026-07-20 = 월요일
 const TODAY = new Date(2026, 6, 20);
@@ -54,6 +54,33 @@ for (const [expr, expectDate, expectHour] of cases) {
     pass++;
   } else {
     failures.push(`${expr} → ${got} h=${r.hour} (기대: ${expectDate} h=${expectHour})`);
+  }
+}
+
+// ── 시간 범위 ("19시부터 21시까지" 종료시각 유실 버그) ──
+const rangeCases = [
+  ["매주 목요일 19시부터 21시까지", "19:00", "21:00"],
+  ["오후 7시~9시", "19:00", "21:00"],
+  ["14:00-16:00", "14:00", "16:00"],
+  ["내일 오전 10시부터 11시 30분까지", "10:00", "11:30"],
+  ["오후 2시", "14:00", "15:00"], // 종료 미지정 → 기본 1시간
+  ["저녁 7시", "19:00", "20:00"],
+];
+for (const [expr, wantStart, wantEnd] of rangeCases) {
+  const r = resolveDateExpr(expr, TODAY);
+  if (!r || r.hour === null) {
+    failures.push(`[범위] ${expr} → 시각 파싱 실패`);
+    continue;
+  }
+  const { startAt, endAt } = toStartEnd(r);
+  const got = [startAt.slice(11, 16), endAt.slice(11, 16)];
+  if (got[0] === wantStart && got[1] === wantEnd) {
+    console.log(`ok    ${expr.padEnd(28)} → ${got[0]}~${got[1]}`);
+    pass++;
+  } else {
+    failures.push(
+      `[범위] ${expr} → ${got[0]}~${got[1]} (기대: ${wantStart}~${wantEnd})`
+    );
   }
 }
 

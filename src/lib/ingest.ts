@@ -30,6 +30,7 @@ import type {
   CapturedInput,
   ProjectSummary,
   ScheduleInfo,
+  RecurrenceRule,
   NodeType,
   InputChannel,
 } from "@/lib/types";
@@ -40,6 +41,7 @@ import {
   createCapturedInput,
   generateId,
 } from "@/lib/services";
+import { describeRecurrence } from "@/lib/recurrence";
 
 const WS = "demo-workspace";
 
@@ -94,10 +96,14 @@ export function buildPlan(
     const when = s.startAt
       ? formatWhen(s.startAt, s.endAt, s.allDay)
       : "날짜 미정";
+    // 반복이면 "매주 화요일 · 7/28부터" 처럼 보여준다
+    const rec = describeRecurrence(normalizeRecurrence((s as any).recurrence));
     items.push({
       layer: "schedule",
       label: s.title || ex.summary,
-      detail: [when, s.location].filter(Boolean).join(" · "),
+      detail: [rec, rec && s.startAt ? `${when}부터` : when, s.location]
+        .filter(Boolean)
+        .join(" · "),
       action: "create",
       enabled: true,
     });
@@ -401,6 +407,7 @@ export function applyPlan(
               location: null,
               attendees: [],
               reminders: [],
+              recurrence: null,
             }
           : null,
       personIds,
@@ -459,6 +466,8 @@ function toScheduleInfo(s: {
   allDay: boolean;
   location: string | null;
   categoryId: string | null;
+  /** 서버(오케스트레이터)가 이미 계산해 넣어준 반복 규칙 */
+  recurrence?: RecurrenceRule | null;
 }): ScheduleInfo {
   const start = s.startAt ? new Date(s.startAt) : new Date();
   const end = s.endAt ? new Date(s.endAt) : new Date(start.getTime() + 3600000);
@@ -475,6 +484,23 @@ function toScheduleInfo(s: {
     location: s.location ?? null,
     attendees: [],
     reminders: [],
+    // 서버가 준 규칙을 그대로 싣는다. Date로 복원해야 Firestore 변환이 맞는다.
+    recurrence: normalizeRecurrence(s.recurrence),
+  };
+}
+
+/** JSON을 거치며 문자열이 된 날짜 필드를 Date로 되돌린다 */
+function normalizeRecurrence(r: unknown): RecurrenceRule | null {
+  if (!r || typeof r !== "object") return null;
+  const x = r as any;
+  if (!x.freq) return null;
+  return {
+    freq: x.freq,
+    interval: x.interval ?? 1,
+    byWeekday: Array.isArray(x.byWeekday) ? x.byWeekday : [],
+    until: x.until ? new Date(x.until) : null,
+    count: x.count ?? null,
+    exdates: Array.isArray(x.exdates) ? x.exdates.map((d: string) => new Date(d)) : [],
   };
 }
 

@@ -49,6 +49,8 @@ import {
   Minus,
   RotateCcw,
   GripHorizontal,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   useFloatingWindow,
@@ -63,6 +65,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { Node } from '@/lib/types';
 import { VoiceButton } from './voice-input';
+import { describeRecurrence } from '@/lib/recurrence';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -694,57 +697,102 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       },
     ]);
 
-    /* ---- AI 층 분해 호출 ---- */
+    /* ---- 오케스트레이터 호출 ---- */
     try {
-      const res = await fetch('/api/ai/parse', {
+      // 다가오는 일정 요약 — 대화/질의 담당이 근거로 쓴다
+      const now = new Date();
+      const upcoming = Object.values(nodes)
+        .filter((n) => n.schedule && n.aiMeta?.status !== 'draft')
+        .map((n) => ({ n, s: n.schedule! }))
+        .filter(({ s }) => s.recurrence || s.startAt >= now)
+        .sort((a, b) => a.s.startAt.getTime() - b.s.startAt.getTime())
+        .slice(0, 12)
+        .map(({ n, s }) => ({
+          title: n.title,
+          when: `${s.startAt.getMonth() + 1}/${s.startAt.getDate()}`,
+          recurrence: describeRecurrence(s.recurrence) || null,
+        }));
+
+      const res = await fetch('/api/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           input: text,
-          projects: projects.map((p) => ({ id: p.id, title: p.title })),
-          categories: Object.values(categories).map((c) => ({
-            id: c.id,
-            label: c.label,
-          })),
-          people: Object.values(people).map((p) => ({
-            id: p.id,
-            name: p.name,
-            org: p.org,
-          })),
-          organizations: Object.values(orgs).map((o) => ({
-            id: o.id,
-            name: o.name,
-          })),
+          // 직전 대화 — 라우터가 맥락을 보고 판단하도록
+          history: messages
+            .filter((m) => m.role === 'user' || m.role === 'ai')
+            .slice(-6)
+            .map((m) => ({
+              role: m.role === 'user' ? 'user' : 'assistant',
+              content: m.content,
+            })),
+          ctx: {
+            projects: projects.map((p) => ({ id: p.id, title: p.title })),
+            categories: Object.values(categories).map((c) => ({
+              id: c.id,
+              label: c.label,
+            })),
+            people: Object.values(people).map((p) => ({
+              id: p.id,
+              name: p.name,
+              org: p.org,
+            })),
+            organizations: Object.values(orgs).map((o) => ({
+              id: o.id,
+              name: o.name,
+            })),
+            upcoming,
+            counts: {
+              일정: Object.values(nodes).length,
+              인물: Object.values(people).length,
+              조직: Object.values(orgs).length,
+              프로젝트: projects.length,
+            },
+          },
           locale: language,
         }),
       });
 
       if (!res.ok) throw new Error('API error');
-      const extraction = await res.json();
+      const data = await res.json();
 
-      const plan = buildPlan(extraction, {
-        projects,
-        findPerson,
-        findOrg,
-      });
-
-      // 계획을 Draft 카드로 표시 — 사용자가 Confirm해야 저장됨
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === thinkId
-            ? {
-                id: thinkId,
-                role: 'plan' as const,
-                content: plan.summary,
-                plan,
-                rawText: text,
-                planApplied: false,
-              }
-            : m,
-        ),
-      );
+      if (data.intent === 'schedule' && data.extraction) {
+        // 일정 담당 → 저장 계획 카드
+        const plan = buildPlan(data.extraction, {
+          projects,
+          findPerson,
+          findOrg,
+        });
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === thinkId
+              ? {
+                  id: thinkId,
+                  role: 'plan' as const,
+                  content: plan.summary,
+                  plan,
+                  rawText: text,
+                  planApplied: false,
+                }
+              : m,
+          ),
+        );
+      } else {
+        // 대화/질의/명령 → 그냥 답한다. 저장하지 않는다.
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === thinkId
+              ? {
+                  id: thinkId,
+                  role: 'ai' as const,
+                  content: data.reply || '...',
+                }
+              : m,
+          ),
+        );
+      }
     } catch (err) {
-      console.warn('[AI parse] 실패, 로컬 파서로 폴백:', err);
+      console.warn('[AI] 실패, 로컬 파서로 폴백:', err);
       const result = parseUserInput(text, language);
       const draft = createDraftNode(result, 'demo-workspace');
       addNode(draft);
@@ -1354,10 +1402,15 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               exit={{ scale: 0, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 400, damping: 25 }}
               onClick={() => setOpen(true)}
-              className="fixed bottom-6 right-6 z-50 flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-lg shadow-teal-500/25"
-              aria-label={t.chat.title}
+              className="group fixed bottom-6 right-6 z-50 flex h-12 items-center gap-2 rounded-full bg-gradient-to-br from-teal-500 to-emerald-600 px-3.5 text-white shadow-lg shadow-teal-500/25 transition-all hover:pr-4"
+              aria-label={`${t.chat.title} 열기`}
+              title={`${t.chat.title} 열기`}
             >
-              <MessageCircle className="size-5" />
+              <MessageCircle className="size-5 shrink-0" />
+              {/* 평소엔 아이콘만, 호버하면 이름이 펼쳐진다 */}
+              <span className="max-w-0 overflow-hidden whitespace-nowrap text-sm font-medium opacity-0 transition-all duration-200 group-hover:max-w-[8rem] group-hover:opacity-100">
+                {t.chat.title}
+              </span>
               {draftCount > 0 && (
                 <span className="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
                   {draftCount}
@@ -1406,33 +1459,45 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
                 className="flex items-center gap-0.5"
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6"
+                <button
                   title="기본 위치로"
+                  aria-label="기본 위치로"
                   onClick={reset}
+                  className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
                 >
-                  <RotateCcw className="size-3" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6"
+                  <RotateCcw className="size-3.5" />
+                </button>
+                <button
                   title={minimized ? '펼치기' : '접기'}
+                  aria-label={minimized ? '펼치기' : '접기'}
                   onClick={() => setMinimized((m) => !m)}
+                  className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
                 >
-                  <Minus className="size-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6"
-                  title="닫기"
+                  {minimized ? (
+                    <ChevronUp className="size-4" />
+                  ) : (
+                    <ChevronDown className="size-4" />
+                  )}
+                </button>
+                <button
+                  title="아이콘으로 최소화"
+                  aria-label="아이콘으로 최소화"
                   onClick={() => setOpen(false)}
+                  className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
                 >
-                  <X className="size-3.5" />
-                </Button>
+                  <Minus className="size-4" />
+                </button>
+                <button
+                  title="닫기"
+                  aria-label="닫기"
+                  onClick={() => {
+                    setOpen(false);
+                    setMinimized(false);
+                  }}
+                  className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground"
+                >
+                  <X className="size-4" />
+                </button>
               </div>
             </div>
 

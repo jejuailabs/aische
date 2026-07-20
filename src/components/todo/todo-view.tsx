@@ -109,6 +109,7 @@ export function TodoView() {
         location: null,
         attendees: [],
         reminders: [],
+        recurrence: null,
       },
     });
     addNode(node);

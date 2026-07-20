@@ -93,6 +93,8 @@ function buildSchedule(
       .map((a) => a.trim())
       .filter(Boolean),
     reminders: prev?.reminders ?? [],
+    // 반복 규칙은 편집 시 유실되지 않도록 그대로 보존한다
+    recurrence: prev?.recurrence ?? null,
   };
 }
 

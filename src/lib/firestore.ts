@@ -37,6 +37,7 @@ import type {
   UserProfile,
   ScheduleInfo,
   Reminder,
+  RecurrenceRule,
   Person,
   Organization,
   CapturedInput,
@@ -60,6 +61,36 @@ function dateToTs(d: Date | null | undefined): Timestamp | null {
   return Timestamp.fromDate(date);
 }
 
+// ─── 반복 규칙 변환 ──────────────────────────────────
+
+function recurrenceToFirestore(r: RecurrenceRule | null): DocumentData | null {
+  if (!r) return null;
+  return {
+    freq: r.freq,
+    interval: r.interval ?? 1,
+    byWeekday: r.byWeekday ?? [],
+    until: dateToTs(r.until),
+    count: r.count ?? null,
+    exdates: (r.exdates ?? [])
+      .map((d) => dateToTs(d))
+      .filter((t): t is Timestamp => t !== null),
+  };
+}
+
+function firestoreToRecurrence(data: unknown): RecurrenceRule | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as DocumentData;
+  if (!d.freq) return null;
+  return {
+    freq: d.freq,
+    interval: d.interval ?? 1,
+    byWeekday: d.byWeekday ?? [],
+    until: d.until ? toDate(d.until) : null,
+    count: d.count ?? null,
+    exdates: Array.isArray(d.exdates) ? d.exdates.map(toDate) : [],
+  };
+}
+
 // ─── Node 변환 ───────────────────────────────────────
 
 function nodeToFirestore(node: Node): DocumentData {
@@ -78,6 +109,7 @@ function nodeToFirestore(node: Node): DocumentData {
       endAt: dateToTs(schedule.endAt),
       dueAt: dateToTs(schedule.dueAt),
       reminders: schedule.reminders ?? [],
+      recurrence: recurrenceToFirestore(schedule.recurrence),
     };
   } else {
     base.schedule = null;
@@ -94,6 +126,8 @@ function firestoreToNode(data: DocumentData): Node {
         endAt: toDate(data.schedule.endAt),
         dueAt: data.schedule.dueAt ? toDate(data.schedule.dueAt) : null,
         reminders: data.schedule.reminders ?? [],
+        // 구 데이터 호환: recurrence 필드가 없으면 1회성 일정
+        recurrence: firestoreToRecurrence(data.schedule.recurrence),
       } as ScheduleInfo)
     : null;
 
@@ -256,6 +290,8 @@ export async function updateNodeFields(
       startAt: dateToTs(updates.schedule.startAt),
       endAt: dateToTs(updates.schedule.endAt),
       dueAt: dateToTs(updates.schedule.dueAt ?? null),
+      reminders: updates.schedule.reminders ?? [],
+      recurrence: recurrenceToFirestore(updates.schedule.recurrence ?? null),
     };
   }
   if (updates.completedAt !== undefined) {

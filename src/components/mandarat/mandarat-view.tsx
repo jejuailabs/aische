@@ -76,6 +76,7 @@ function buildSchedule(dateStr: string): ScheduleInfo | null {
     location: null,
     attendees: [],
     reminders: [],
+    recurrence: null,
   };
 }
 

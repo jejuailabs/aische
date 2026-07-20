@@ -12,6 +12,9 @@ export interface ResolvedDate {
   /** 시각이 명시됐으면 시/분 */
   hour: number | null;
   minute: number;
+  /** 종료 시각이 명시됐으면 ("19시부터 21시까지") */
+  endHour: number | null;
+  endMinute: number;
   /** 어떤 규칙으로 해석했는지 (디버깅/로그용) */
   rule: string;
 }
@@ -45,31 +48,80 @@ function weekdayInWeek(weekStart: Date, targetDow: number): Date {
   return r;
 }
 
-/** 시각 표현 파싱: "오후 2시 30분", "14:00", "2시" */
-function parseTime(text: string): { hour: number; minute: number } | null {
+interface TimePoint {
+  hour: number;
+  minute: number;
+}
+interface TimeRange {
+  start: TimePoint;
+  /** "19시부터 21시까지"처럼 종료가 명시된 경우만 */
+  end: TimePoint | null;
+}
+
+/** 오전/오후 보정. 문맥에 오후 표시가 있으면 12시간 더한다 */
+function applyMeridiem(h: number, isPM: boolean, isAM: boolean): number {
+  if (isPM && h < 12) return h + 12;
+  if (isAM && h === 12) return 0;
+  return h;
+}
+
+/**
+ * 시각 표현 파싱. 범위도 인식한다.
+ *   "오후 2시 30분"        → 14:30
+ *   "19시부터 21시까지"     → 19:00 ~ 21:00
+ *   "오후 7시~9시"         → 19:00 ~ 21:00
+ *   "14:00-16:00"         → 14:00 ~ 16:00
+ */
+function parseTime(text: string): TimeRange | null {
   const isPM = /오후|저녁|밤|pm/i.test(text);
   const isAM = /오전|아침|am/i.test(text);
 
-  // HH:MM
-  const colon = text.match(/(\d{1,2}):(\d{2})/);
-  if (colon) {
-    let h = parseInt(colon[1], 10);
-    const m = parseInt(colon[2], 10);
-    if (isPM && h < 12) h += 12;
-    if (isAM && h === 12) h = 0;
-    return { hour: h, minute: m };
+  // ── 1) 범위 먼저 ──
+  // "19시부터 21시까지", "7시~9시", "7시 - 9시"
+  const korRange = text.match(
+    /(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?\s*(?:부터|에서)?\s*(?:~|-|—|–|부터)\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?\s*(?:까지)?/
+  );
+  if (korRange) {
+    let sh = applyMeridiem(+korRange[1], isPM, isAM);
+    const sm = korRange[2] ? +korRange[2] : 0;
+    let eh = applyMeridiem(+korRange[3], isPM, isAM);
+    const em = korRange[4] ? +korRange[4] : 0;
+    if (!isPM && !isAM && /저녁|밤/.test(text) && sh < 12) {
+      sh += 12;
+      eh += 12;
+    }
+    // 종료가 시작보다 이르면 오후로 넘어간 것으로 본다 (예: 11시~1시)
+    if (eh < sh) eh += 12;
+    return { start: { hour: sh, minute: sm }, end: { hour: eh, minute: em } };
   }
 
-  // N시 [M분]
+  // "14:00~16:00"
+  const colonRange = text.match(
+    /(\d{1,2}):(\d{2})\s*(?:~|-|—|–|부터)\s*(\d{1,2}):(\d{2})/
+  );
+  if (colonRange) {
+    const sh = applyMeridiem(+colonRange[1], isPM, isAM);
+    const eh = applyMeridiem(+colonRange[3], isPM, isAM);
+    return {
+      start: { hour: sh, minute: +colonRange[2] },
+      end: { hour: eh, minute: +colonRange[4] },
+    };
+  }
+
+  // ── 2) 단일 시각 ──
+  const colon = text.match(/(\d{1,2}):(\d{2})/);
+  if (colon) {
+    const h = applyMeridiem(+colon[1], isPM, isAM);
+    return { start: { hour: h, minute: +colon[2] }, end: null };
+  }
+
   const kor = text.match(/(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?/);
   if (kor) {
-    let h = parseInt(kor[1], 10);
-    const m = kor[2] ? parseInt(kor[2], 10) : 0;
-    if (isPM && h < 12) h += 12;
-    if (isAM && h === 12) h = 0;
+    let h = applyMeridiem(+kor[1], isPM, isAM);
+    const m = kor[2] ? +kor[2] : 0;
     // "저녁 7시" 처럼 오전/오후 없이 저녁/밤이면 오후로
     if (!isPM && !isAM && /저녁|밤/.test(text) && h < 12) h += 12;
-    return { hour: h, minute: m };
+    return { start: { hour: h, minute: m }, end: null };
   }
 
   return null;
@@ -88,8 +140,10 @@ export function resolveDateExpr(
   const time = parseTime(s);
   const withTime = (date: Date, rule: string): ResolvedDate => ({
     date: atMidnight(date),
-    hour: time?.hour ?? null,
-    minute: time?.minute ?? 0,
+    hour: time?.start.hour ?? null,
+    minute: time?.start.minute ?? 0,
+    endHour: time?.end?.hour ?? null,
+    endMinute: time?.end?.minute ?? 0,
     rule,
   });
 
@@ -220,7 +274,16 @@ export function toStartEnd(
     return { startAt: toLocalISO(start), endAt: toLocalISO(end), allDay: true };
   }
   start.setHours(r.hour, r.minute, 0, 0);
-  const end = new Date(start.getTime() + durationMinutes * 60000);
+  // 종료 시각이 명시됐으면("19시부터 21시까지") 그걸 쓰고, 아니면 기본 소요시간
+  let end: Date;
+  if (r.endHour !== null) {
+    end = new Date(r.date);
+    end.setHours(r.endHour, r.endMinute, 0, 0);
+    // 자정을 넘기는 일정 (22시~1시)
+    if (end.getTime() <= start.getTime()) end.setDate(end.getDate() + 1);
+  } else {
+    end = new Date(start.getTime() + durationMinutes * 60000);
+  }
   return { startAt: toLocalISO(start), endAt: toLocalISO(end), allDay: false };
 }
 

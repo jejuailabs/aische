@@ -126,6 +126,7 @@ export function DashboardView() {
         location: null,
         attendees: [],
         reminders: [],
+        recurrence: null,
       },
     });
     addNode(node);

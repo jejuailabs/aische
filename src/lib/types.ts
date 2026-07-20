@@ -12,6 +12,26 @@ export interface ScheduleInfo {
   location: string | null;
   attendees: string[];
   reminders: Reminder[];
+  /** 반복 규칙. null이면 1회성 일정 */
+  recurrence: RecurrenceRule | null;
+}
+
+/**
+ * 반복 일정 규칙 (iCalendar RRULE의 축소판).
+ * 회차를 미리 만들어 저장하지 않고, 조회 시점에 계산해서 펼친다.
+ */
+export interface RecurrenceRule {
+  freq: "daily" | "weekly" | "monthly" | "yearly";
+  /** 1 = 매주, 2 = 격주 */
+  interval: number;
+  /** weekly 전용. 0(일)~6(토). 비어 있으면 startAt의 요일을 사용 */
+  byWeekday: number[];
+  /** 이 날짜까지만 반복 (포함). null이면 무기한 */
+  until: Date | null;
+  /** 총 반복 횟수. null이면 무제한 */
+  count: number | null;
+  /** 개별 취소된 회차 (해당 날짜의 자정 기준) */
+  exdates: Date[];
 }
 
 export interface Reminder {

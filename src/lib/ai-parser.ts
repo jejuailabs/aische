@@ -249,6 +249,7 @@ export function parseUserInput(input: string, locale: string): ParseResult {
           location,
           attendees,
           reminders: [],
+          recurrence: null,
         }
       : {
           startAt: baseDate,
@@ -259,6 +260,7 @@ export function parseUserInput(input: string, locale: string): ParseResult {
           location: null,
           attendees: [],
           reminders: [],
+          recurrence: null,
         },
     priority: {
       urgency: missingFields.length === 0 ? 4 : 2,
@@ -318,6 +320,7 @@ export function applyClarification(
         location: null,
         attendees: [],
         reminders: [],
+        recurrence: null,
       };
 
   switch (fieldName) {
