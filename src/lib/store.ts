@@ -17,8 +17,11 @@ import type {
   NodeType,
   LogEntry,
   LogAction,
+  Person,
+  Organization,
+  CapturedInput,
 } from "@/lib/types";
-import { generateId } from "@/lib/services";
+import { generateId, computeRollup } from "@/lib/services";
 import * as fs from "@/lib/firestore";
 
 // ─── Firestore 쓰기 헬퍼 (fire-and-forget, 에러 콘솔) ───
@@ -69,12 +72,12 @@ interface NavState {
 }
 
 export const useNavStore = create<NavState>((set) => ({
-  activeView: "dashboard",
+  activeView: "calendar",
   calendarSubView: "monthly",
   selectedDate: new Date(),
   selectedProjectId: null,
   selectedNodeId: null,
-  mobileTab: "dashboard",
+  mobileTab: "calendar",
   setView: (v) => set({ activeView: v }),
   setCalendarSubView: (v) => set({ calendarSubView: v }),
   setSelectedDate: (d) => set({ selectedDate: d }),
@@ -137,7 +140,10 @@ interface NodeState {
   getChildNodes: (parentId: string) => Node[];
   getDescendantNodes: (parentId: string) => Node[];
   getUnsortedNodes: () => Node[];
+  /** parentId부터 루트까지 자식 기준 롤업(진행률/자동완료/재오픈)을 전파 */
   recalcParentProgress: (parentId: string) => void;
+  /** 해당 노드의 상태 변경을 부모 체인을 따라 루트까지 전파 */
+  propagateCompletion: (nodeId: string) => void;
 }
 
 export const useNodeStore = create<NodeState>((set, get) => ({
@@ -298,17 +304,38 @@ export const useNodeStore = create<NodeState>((set, get) => ({
     Object.values(get().nodes).filter(
       (n) => n.projectId === "unsorted" && n.aiMeta?.status !== "draft"
     ),
+  // parentId(포함)부터 루트까지 올라가며 computeRollup을 적용한다.
+  // - 자식 전부 완료 + autoCompleteFromChildren → 부모 자동 완료
+  // - 자식이 다시 열리면 완료됐던 부모를 in_progress로 되돌림
   recalcParentProgress: (parentId) => {
-    const parent = get().nodes[parentId];
-    if (!parent) return;
-    const children = get().getChildNodes(parentId);
-    if (children.length === 0) return;
-    const avgProgress = Math.round(
-      children.reduce((sum, c) => sum + c.progress, 0) / children.length
-    );
-    get().updateNode(parentId, { progress: avgProgress });
-    // Cascade upward
-    if (parent.parentId) get().recalcParentProgress(parent.parentId);
+    let currentId: string | null = parentId;
+    const seen = new Set<string>();
+    while (currentId && !seen.has(currentId)) {
+      seen.add(currentId);
+      const parent: Node | undefined = get().nodes[currentId];
+      if (!parent) break;
+      const children = get().getChildNodes(currentId);
+      const updates = computeRollup(parent, children);
+      if (updates) {
+        get().updateNode(currentId, updates);
+        if (updates.status === "completed") {
+          useLogStore.getState().addLog({
+            nodeId: currentId,
+            workspaceId: parent.workspaceId,
+            action: "complete",
+            before: { status: parent.status, progress: parent.progress },
+            after: updates,
+            actor: useAuthStore.getState().user?.uid ?? "anonymous",
+          });
+        }
+      }
+      currentId = parent.parentId;
+    }
+  },
+  propagateCompletion: (nodeId) => {
+    const node = get().nodes[nodeId];
+    if (!node?.parentId) return;
+    get().recalcParentProgress(node.parentId);
   },
 }));
 
@@ -372,7 +399,7 @@ interface PrefState {
 
 export const usePrefStore = create<PrefState>((set) => ({
   language: "ko",
-  homeMode: "dashboard",
+  homeMode: "calendar",
   setLanguage: (l) => set({ language: l }),
   setHomeMode: (m) => set({ homeMode: m }),
 }));
@@ -383,6 +410,12 @@ interface ProjectSummaryState {
   setProjects: (p: ProjectSummary[]) => void;
   addProject: (p: ProjectSummary) => void;
   updateProject: (id: string, updates: Partial<ProjectSummary>) => void;
+  /**
+   * 프로젝트 삭제.
+   * @param mode "unsort" = 소속 노드를 미분류함으로 이동 (기본, 안전)
+   *             "cascade" = 소속 노드까지 전부 삭제
+   */
+  removeProject: (id: string, mode?: "unsort" | "cascade") => void;
 }
 
 export const useProjectStore = create<ProjectSummaryState>((set, get) => ({
@@ -401,4 +434,193 @@ export const useProjectStore = create<ProjectSummaryState>((set, get) => ({
     const merged = useProjectStore.getState().projects.find((p) => p.id === id);
     if (merged) fsWrite((uid) => fs.saveProject(uid, merged));
   },
+  removeProject: (id, mode = "unsort") => {
+    const nodeStore = useNodeStore.getState();
+    // 이 프로젝트에 속한 모든 노드 (루트 노드 자신 포함)
+    const owned = Object.values(nodeStore.nodes).filter(
+      (n) => n.projectId === id || n.id === id
+    );
+
+    if (mode === "cascade") {
+      for (const n of owned) nodeStore.removeNodeWithLog(n.id);
+    } else {
+      // 루트만 삭제하고 나머지는 미분류함으로 옮긴다.
+      // 내부 부모-자식 관계는 그대로 두고, 삭제되는 루트를 부모로 갖던
+      // 노드만 최상위로 올린다 (계층 구조 보존).
+      const removedIds = new Set([id]);
+      for (const n of owned) {
+        if (n.id === id) {
+          nodeStore.removeNodeWithLog(n.id);
+          continue;
+        }
+        nodeStore.updateNode(n.id, {
+          projectId: "unsorted",
+          parentId:
+            n.parentId && removedIds.has(n.parentId) ? null : n.parentId,
+        });
+      }
+    }
+
+    set((s) => ({ projects: s.projects.filter((p) => p.id !== id) }));
+    fsWrite((uid) => fs.deleteProject(uid, id));
+
+    // 삭제된 프로젝트를 보고 있었으면 선택 해제
+    if (useNavStore.getState().selectedProjectId === id) {
+      useNavStore.getState().setSelectedProject(null);
+    }
+  },
+}));
+
+// ==========================================
+// 인물 레이어 (명함 / 연락처)
+// ==========================================
+interface PersonState {
+  people: Record<string, Person>;
+  setPeople: (p: Person[]) => void;
+  addPerson: (p: Person) => void;
+  updatePerson: (id: string, updates: Partial<Person>) => void;
+  removePerson: (id: string) => void;
+  /** 이름(+소속)으로 기존 인물 찾기 — AI 중복 등록 방지용 */
+  findByName: (name: string, org?: string | null) => Person | undefined;
+  linkToNode: (personId: string, nodeId: string) => void;
+}
+
+export const usePersonStore = create<PersonState>((set, get) => ({
+  people: {},
+  setPeople: (list) => {
+    const map: Record<string, Person> = {};
+    list.forEach((p) => { map[p.id] = p; });
+    set({ people: map });
+  },
+  addPerson: (p) => {
+    set((s) => ({ people: { ...s.people, [p.id]: p } }));
+    fsWrite((uid) => fs.savePerson(uid, p));
+  },
+  updatePerson: (id, updates) => {
+    set((s) => ({
+      people: s.people[id]
+        ? { ...s.people, [id]: { ...s.people[id], ...updates, updatedAt: new Date() } }
+        : s.people,
+    }));
+    fsWrite((uid) => fs.updatePersonFields(uid, id, updates));
+  },
+  removePerson: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.people;
+      return { people: rest };
+    });
+    fsWrite((uid) => fs.deletePerson(uid, id));
+  },
+  findByName: (name, org) => {
+    const norm = (v: string) => v.replace(/\s+/g, "").toLowerCase();
+    const target = norm(name);
+    return Object.values(get().people).find((p) => {
+      if (norm(p.name) !== target) return false;
+      // 소속이 둘 다 있으면 소속까지 일치해야 동일인
+      if (org && p.org) return norm(p.org) === norm(org);
+      return true;
+    });
+  },
+  linkToNode: (personId, nodeId) => {
+    const p = get().people[personId];
+    if (!p || p.relatedNodeIds.includes(nodeId)) return;
+    get().updatePerson(personId, {
+      relatedNodeIds: [...p.relatedNodeIds, nodeId],
+    });
+  },
+}));
+
+// ==========================================
+// 조직 레이어
+// ==========================================
+interface OrgState {
+  orgs: Record<string, Organization>;
+  setOrgs: (o: Organization[]) => void;
+  addOrg: (o: Organization) => void;
+  updateOrg: (id: string, updates: Partial<Organization>) => void;
+  removeOrg: (id: string) => void;
+  findByName: (name: string) => Organization | undefined;
+  linkToNode: (orgId: string, nodeId: string) => void;
+}
+
+export const useOrgStore = create<OrgState>((set, get) => ({
+  orgs: {},
+  setOrgs: (list) => {
+    const map: Record<string, Organization> = {};
+    list.forEach((o) => { map[o.id] = o; });
+    set({ orgs: map });
+  },
+  addOrg: (o) => {
+    set((s) => ({ orgs: { ...s.orgs, [o.id]: o } }));
+    fsWrite((uid) => fs.saveOrganization(uid, o));
+  },
+  updateOrg: (id, updates) => {
+    set((s) => ({
+      orgs: s.orgs[id]
+        ? { ...s.orgs, [id]: { ...s.orgs[id], ...updates, updatedAt: new Date() } }
+        : s.orgs,
+    }));
+    fsWrite((uid) => fs.updateOrganizationFields(uid, id, updates));
+  },
+  removeOrg: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.orgs;
+      return { orgs: rest };
+    });
+    fsWrite((uid) => fs.deleteOrganization(uid, id));
+  },
+  findByName: (name) => {
+    const norm = (v: string) => v.replace(/\s+/g, "").toLowerCase();
+    const target = norm(name);
+    return Object.values(get().orgs).find((o) => norm(o.name) === target);
+  },
+  linkToNode: (orgId, nodeId) => {
+    const o = get().orgs[orgId];
+    if (!o || o.relatedNodeIds.includes(nodeId)) return;
+    get().updateOrg(orgId, { relatedNodeIds: [...o.relatedNodeIds, nodeId] });
+  },
+}));
+
+// ==========================================
+// 원본 입력 축적 레이어
+// ==========================================
+interface CaptureState {
+  captures: Record<string, CapturedInput>;
+  setCaptures: (c: CapturedInput[]) => void;
+  addCapture: (c: CapturedInput) => void;
+  updateCapture: (id: string, updates: Partial<CapturedInput>) => void;
+  removeCapture: (id: string) => void;
+  getRecent: (limit?: number) => CapturedInput[];
+}
+
+export const useCaptureStore = create<CaptureState>((set, get) => ({
+  captures: {},
+  setCaptures: (list) => {
+    const map: Record<string, CapturedInput> = {};
+    list.forEach((c) => { map[c.id] = c; });
+    set({ captures: map });
+  },
+  addCapture: (c) => {
+    set((s) => ({ captures: { ...s.captures, [c.id]: c } }));
+    fsWrite((uid) => fs.saveCapturedInput(uid, c));
+  },
+  updateCapture: (id, updates) => {
+    set((s) => ({
+      captures: s.captures[id]
+        ? { ...s.captures, [id]: { ...s.captures[id], ...updates } }
+        : s.captures,
+    }));
+    fsWrite((uid) => fs.updateCapturedInputFields(uid, id, updates));
+  },
+  removeCapture: (id) => {
+    set((s) => {
+      const { [id]: _, ...rest } = s.captures;
+      return { captures: rest };
+    });
+    fsWrite((uid) => fs.deleteCapturedInput(uid, id));
+  },
+  getRecent: (limit = 50) =>
+    Object.values(get().captures)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit),
 }));

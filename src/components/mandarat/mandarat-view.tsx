@@ -10,13 +10,15 @@ import {
   useAuthStore,
 } from '@/lib/store';
 import { useLocale } from '@/hooks/use-locale';
-import { createNode, generateId } from '@/lib/services';
+import { createNode, generateId, canCompleteTask } from '@/lib/services';
 import { format } from 'date-fns';
 import { ko as koLocale } from 'date-fns/locale';
+import type { Locale } from 'date-fns';
 import {
   Plus, Trash2, Pencil, ChevronRight, ChevronDown, ChevronLeft,
   LayoutGrid, GitBranch, List, Sparkles, Target, Loader2,
-  Inbox, Check, X, AlertTriangle,
+  Inbox, Check, X, AlertTriangle, FolderPlus, CheckSquare, Square,
+  Zap, FolderTree,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +27,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -32,12 +35,72 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import type { Node, NodeStatus } from '@/lib/types';
+import type {
+  Node, NodeStatus, NodeKind, CompletionCriteria, ChecklistItem, ScheduleInfo,
+} from '@/lib/types';
 
 type ViewMode = 'grid' | 'tree' | 'list';
+type CompletionMode = 'manual' | 'deliverable' | 'checklist';
+
+/** 단위 추가/수정 다이얼로그의 임시 폼 상태 */
+interface UnitDraft {
+  parentId: string;
+  /** 비어있는 자리표시자 노드를 채우는 경우 그 노드 id */
+  existingId: string | null;
+  title: string;
+  kind: NodeKind;
+  completionMode: CompletionMode;
+  deliverableRef: string;
+  dueDate: string; // yyyy-MM-dd
+}
+
+const WORKSPACE_ID = 'demo-workspace';
+
+/** yyyy-MM-dd → 종일 ScheduleInfo */
+function buildSchedule(dateStr: string): ScheduleInfo | null {
+  if (!dateStr) return null;
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return {
+    startAt: d,
+    endAt: d,
+    dueAt: d,
+    allDay: true,
+    category: '',
+    location: null,
+    attendees: [],
+    reminders: [],
+  };
+}
+
+function toDateInput(value: unknown): string {
+  if (!value) return '';
+  const d = new Date(value as any);
+  if (Number.isNaN(d.getTime())) return '';
+  return format(d, 'yyyy-MM-dd');
+}
+
+function buildCompletion(
+  kind: NodeKind,
+  mode: CompletionMode,
+  deliverableRef: string,
+  keepItems: ChecklistItem[] = []
+): CompletionCriteria | null {
+  if (kind !== 'task') return null;
+  if (mode === 'deliverable') {
+    return { mode: 'deliverable', deliverableRef: deliverableRef.trim() || null, deliverableNote: '' };
+  }
+  if (mode === 'checklist') {
+    return { mode: 'checklist', items: keepItems };
+  }
+  return { mode: 'manual' };
+}
 
 export function MandaratView() {
   const { t, locale } = useLocale();
@@ -48,8 +111,10 @@ export function MandaratView() {
   const moveNode = useNodeStore((s) => s.moveNode);
   const getChildNodes = useNodeStore((s) => s.getChildNodes);
   const recalcParentProgress = useNodeStore((s) => s.recalcParentProgress);
+  const propagateCompletion = useNodeStore((s) => s.propagateCompletion);
   const getDescendantNodes = useNodeStore((s) => s.getDescendantNodes);
   const projects = useProjectStore((s) => s.projects);
+  const addProject = useProjectStore((s) => s.addProject);
   const selectedProjectId = useNavStore((s) => s.selectedProjectId);
   const setSelectedProject = useNavStore((s) => s.setSelectedProject);
   const user = useAuthStore((s) => s.user);
@@ -58,14 +123,17 @@ export function MandaratView() {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [zoomedNodeId, setZoomedNodeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState('');
-  const [addingChildFor, setAddingChildFor] = useState<string | null>(null);
-  const [newChildTitle, setNewChildTitle] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Node | null>(null);
   const [aiGenerating, setAiGenerating] = useState(false);
   const [inlineEditId, setInlineEditId] = useState<string | null>(null);
   const [inlineTitle, setInlineTitle] = useState('');
+
+  // 새 프로젝트 다이얼로그
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [newProjectTitle, setNewProjectTitle] = useState('');
+
+  // 단위(task/project) 추가 다이얼로그
+  const [unitDraft, setUnitDraft] = useState<UnitDraft | null>(null);
 
   // Detail panel state
   const [detailTitle, setDetailTitle] = useState('');
@@ -74,6 +142,8 @@ export function MandaratView() {
   const [detailUrgency, setDetailUrgency] = useState(3);
   const [detailImportance, setDetailImportance] = useState(3);
   const [detailProgress, setDetailProgress] = useState(0);
+  const [deliverableInput, setDeliverableInput] = useState('');
+  const [newChecklistLabel, setNewChecklistLabel] = useState('');
 
   const statusLabel = (status: string) => {
     const key = status as keyof typeof t.status;
@@ -87,12 +157,12 @@ export function MandaratView() {
   // Current effective project
   const effectiveProjectId = selectedProjectId ?? projects[0]?.id ?? null;
 
-  // Root node for the selected project
+  // Root node for the selected project (루트 노드의 id === projectId)
   const rootNode = useMemo(() => {
     if (!effectiveProjectId) return null;
     return Object.values(allNodes).find(
       (n) => n.id === effectiveProjectId && (n.type === 'goal' || n.type === 'task')
-    );
+    ) ?? null;
   }, [allNodes, effectiveProjectId]);
 
   // Currently zoomed node (for grid ring-2 navigation)
@@ -114,47 +184,243 @@ export function MandaratView() {
     );
   }, [allNodes]);
 
+  const selectedNode = selectedNodeId ? allNodes[selectedNodeId] ?? null : null;
+
+  const selectedChildren = useMemo(() => {
+    if (!selectedNode) return [];
+    return getChildNodes(selectedNode.id);
+  }, [allNodes, selectedNode, getChildNodes]);
+
   // --- Handlers ---
-  const handleAddChild = useCallback(
-    (parentId: string, title: string) => {
-      if (!title.trim()) return;
-      const parent = allNodes[parentId];
-      if (!parent) return;
+  const handleSelectNode = useCallback((node: Node) => {
+    setSelectedNodeId(node.id);
+    setDetailTitle(node.title);
+    setDetailDesc(node.description);
+    setDetailStatus(node.status);
+    setDetailUrgency(node.priority.urgency);
+    setDetailImportance(node.priority.importance);
+    setDetailProgress(node.progress);
+    setDeliverableInput(
+      node.completion?.mode === 'deliverable' ? node.completion.deliverableRef ?? '' : ''
+    );
+    setNewChecklistLabel('');
+  }, []);
+
+  // ===== 문제 1: 새 프로젝트 생성 =====
+  const handleCreateProject = useCallback(
+    (rawTitle: string) => {
+      const title = rawTitle.trim() || t.mandarat.newProject;
+      // 루트 노드가 곧 프로젝트다 (data-model.md §6): projectId === 자기 자신의 id
+      const id = generateId();
+      const root = createNode({
+        id,
+        workspaceId: user?.uid ?? WORKSPACE_ID,
+        type: 'goal',
+        kind: 'project',
+        title,
+        projectId: id,
+        parentId: null,
+        completion: null,
+        autoCompleteFromChildren: true,
+      });
+      addNodeWithLog(root);
+      addProject({
+        id,
+        title,
+        progress: 0,
+        memberCount: 1,
+        updatedAt: new Date(),
+      });
+      setSelectedProject(id);
+      setZoomedNodeId(null);
+      handleSelectNode(root);
+      setProjectDialogOpen(false);
+      setNewProjectTitle('');
+      toast.success(t.mandarat.projectCreated);
+    },
+    [addNodeWithLog, addProject, setSelectedProject, handleSelectNode, user, t]
+  );
+
+  /** "새 목표" — 프로젝트가 없으면 새 프로젝트 생성 플로우로 폴백 */
+  const handleNewRootGoal = useCallback(() => {
+    if (!effectiveProjectId || !rootNode) {
+      setNewProjectTitle('');
+      setProjectDialogOpen(true);
+      return;
+    }
+    const goal = createNode({
+      workspaceId: rootNode.workspaceId,
+      type: 'goal',
+      kind: 'project',
+      title: '',
+      projectId: effectiveProjectId,
+      parentId: rootNode.id,
+      completion: null,
+      autoCompleteFromChildren: true,
+    });
+    addNodeWithLog(goal);
+    updateNodeWithLog(rootNode.id, {
+      childrenIds: [...rootNode.childrenIds, goal.id],
+    });
+    handleSelectNode(goal);
+    setInlineEditId(goal.id);
+    setInlineTitle('');
+  }, [effectiveProjectId, rootNode, addNodeWithLog, updateNodeWithLog, handleSelectNode]);
+
+  // ===== 문제 2: task / project 분기 다이얼로그 =====
+  const openUnitDialog = useCallback((parentId: string, existing?: Node | null) => {
+    setUnitDraft({
+      parentId,
+      existingId: existing?.id ?? null,
+      title: existing?.title ?? '',
+      kind: existing?.kind ?? 'task',
+      completionMode: (existing?.completion?.mode as CompletionMode) ?? 'manual',
+      deliverableRef:
+        existing?.completion?.mode === 'deliverable'
+          ? existing.completion.deliverableRef ?? ''
+          : '',
+      dueDate: toDateInput(existing?.schedule?.dueAt),
+    });
+  }, []);
+
+  const handleSaveUnit = useCallback(() => {
+    if (!unitDraft) return;
+    const parent = allNodes[unitDraft.parentId];
+    if (!parent) return;
+    const title = unitDraft.title.trim();
+    if (!title) {
+      toast.warning(t.mandarat.nodeTitlePlaceholder);
+      return;
+    }
+
+    const existing = unitDraft.existingId ? allNodes[unitDraft.existingId] : null;
+    const keepItems =
+      existing?.completion?.mode === 'checklist' ? existing.completion.items : [];
+    const completion = buildCompletion(
+      unitDraft.kind,
+      unitDraft.completionMode,
+      unitDraft.deliverableRef,
+      keepItems
+    );
+    const schedule = buildSchedule(unitDraft.dueDate);
+    const nodeType = unitDraft.kind === 'task' ? 'task' : 'goal';
+
+    if (existing) {
+      updateNodeWithLog(existing.id, {
+        title,
+        type: nodeType,
+        kind: unitDraft.kind,
+        completion,
+        autoCompleteFromChildren: unitDraft.kind === 'project',
+        schedule,
+      });
+    } else {
       const child = createNode({
         workspaceId: parent.workspaceId,
-        type: 'goal',
-        title: title.trim(),
+        type: nodeType,
+        kind: unitDraft.kind,
+        title,
         projectId: parent.projectId,
         parentId: parent.id,
+        completion,
+        autoCompleteFromChildren: unitDraft.kind === 'project',
+        schedule,
       });
       addNodeWithLog(child);
-      // Update parent's childrenIds
-      updateNodeWithLog(parentId, {
+      updateNodeWithLog(parent.id, {
         childrenIds: [...parent.childrenIds, child.id],
       });
-      recalcParentProgress(parentId);
-      setAddingChildFor(null);
-      setNewChildTitle('');
+    }
+    recalcParentProgress(parent.id);
+    setUnitDraft(null);
+    toast.success(t.mandarat.unitCreated);
+  }, [unitDraft, allNodes, addNodeWithLog, updateNodeWithLog, recalcParentProgress, t]);
+
+  // ===== 문제 3: 완료 토글 + 상향 전파 =====
+  const handleToggleComplete = useCallback(
+    (node: Node) => {
+      if (node.kind !== 'task') return;
+      const isDone = node.status === 'completed';
+      if (!isDone && !canCompleteTask(node)) {
+        toast.warning(
+          node.completion?.mode === 'deliverable'
+            ? t.mandarat.deliverableRequired
+            : t.mandarat.checklistRequired
+        );
+        return;
+      }
+      updateNodeWithLog(node.id, {
+        status: isDone ? 'scheduled' : 'completed',
+        completedAt: isDone ? null : new Date(),
+        progress: isDone ? 0 : 100,
+      });
+      propagateCompletion(node.id);
     },
-    [allNodes, addNodeWithLog, updateNodeWithLog, recalcParentProgress]
+    [updateNodeWithLog, propagateCompletion, t]
+  );
+
+  /** 체크리스트 항목 변경 후 task 자동 완료/재오픈 + 상향 전파 */
+  const applyChecklist = useCallback(
+    (node: Node, items: ChecklistItem[]) => {
+      const doneCount = items.filter((i) => i.done).length;
+      const allDone = items.length > 0 && doneCount === items.length;
+      const updates: Partial<Node> = {
+        completion: { mode: 'checklist', items },
+        progress: items.length ? Math.round((doneCount / items.length) * 100) : 0,
+      };
+      if (allDone && node.status !== 'completed') {
+        updates.status = 'completed';
+        updates.completedAt = new Date();
+        updates.progress = 100;
+      } else if (!allDone && node.status === 'completed') {
+        updates.status = 'in_progress';
+        updates.completedAt = null;
+      }
+      updateNodeWithLog(node.id, updates);
+      propagateCompletion(node.id);
+    },
+    [updateNodeWithLog, propagateCompletion]
+  );
+
+  const handleSetCompletionMode = useCallback(
+    (node: Node, mode: CompletionMode) => {
+      const keepItems =
+        node.completion?.mode === 'checklist' ? node.completion.items : [];
+      updateNodeWithLog(node.id, {
+        completion: buildCompletion('task', mode, deliverableInput, keepItems),
+      });
+    },
+    [updateNodeWithLog, deliverableInput]
+  );
+
+  const handleSaveDeliverable = useCallback(
+    (node: Node, ref: string) => {
+      if (node.completion?.mode !== 'deliverable') return;
+      updateNodeWithLog(node.id, {
+        completion: {
+          mode: 'deliverable',
+          deliverableRef: ref.trim() || null,
+          deliverableNote: node.completion.deliverableNote ?? '',
+        },
+      });
+    },
+    [updateNodeWithLog]
   );
 
   const handleDelete = useCallback(
     (node: Node) => {
       const descendants = getDescendantNodes(node.id);
-      // Remove all descendants
       for (const d of descendants) removeNodeWithLog(d.id);
-      // Remove from parent
       if (node.parentId) {
         const parent = allNodes[node.parentId];
         if (parent) {
           updateNodeWithLog(node.parentId, {
             childrenIds: parent.childrenIds.filter((c) => c !== node.id),
           });
-          recalcParentProgress(node.parentId);
         }
       }
       removeNodeWithLog(node.id);
+      if (node.parentId) recalcParentProgress(node.parentId);
       if (selectedNodeId === node.id) setSelectedNodeId(null);
       if (zoomedNodeId === node.id) setZoomedNodeId(null);
       setDeleteTarget(null);
@@ -168,15 +434,17 @@ export function MandaratView() {
         setZoomedNodeId(node.id);
         return;
       }
-      // Create 8 empty children
+      // Create 8 empty placeholder children
       const newChildren: Node[] = [];
       for (let i = 0; i < 8; i++) {
         const child = createNode({
           workspaceId: node.workspaceId,
           type: 'goal',
+          kind: 'project',
           title: '',
           projectId: node.projectId,
           parentId: node.id,
+          completion: null,
         });
         newChildren.push(child);
         addNodeWithLog(child);
@@ -201,10 +469,12 @@ export function MandaratView() {
           if (node.childrenIds[i]) continue; // Skip existing
           const child = createNode({
             workspaceId: node.workspaceId,
-            type: 'goal',
+            type: 'task',
+            kind: 'task',
             title: templates[i],
             projectId: node.projectId,
             parentId: node.id,
+            completion: { mode: 'manual' },
             aiMeta: {
               status: 'draft',
               sourceInput: { channel: 'text', rawRef: 'ai-generate' },
@@ -228,19 +498,6 @@ export function MandaratView() {
     [locale, addNodeWithLog, updateNodeWithLog, allNodes]
   );
 
-  const handleSelectNode = useCallback(
-    (node: Node) => {
-      setSelectedNodeId(node.id);
-      setDetailTitle(node.title);
-      setDetailDesc(node.description);
-      setDetailStatus(node.status);
-      setDetailUrgency(node.priority.urgency);
-      setDetailImportance(node.priority.importance);
-      setDetailProgress(node.progress);
-    },
-    []
-  );
-
   const handleSaveDetail = useCallback(() => {
     if (!selectedNodeId) return;
     const oldProgress = allNodes[selectedNodeId]?.progress ?? 0;
@@ -254,13 +511,13 @@ export function MandaratView() {
         score: Math.round(detailUrgency * 0.4 + detailImportance * 0.6),
       },
       progress: detailProgress,
+      completedAt: detailStatus === 'completed' ? (allNodes[selectedNodeId]?.completedAt ?? new Date()) : null,
     });
-    if (detailProgress !== oldProgress) {
-      const node = allNodes[selectedNodeId];
-      if (node?.parentId) recalcParentProgress(node.parentId);
+    if (detailProgress !== oldProgress || detailStatus !== allNodes[selectedNodeId]?.status) {
+      propagateCompletion(selectedNodeId);
     }
     toast.success(t.common.save);
-  }, [selectedNodeId, detailTitle, detailDesc, detailStatus, detailUrgency, detailImportance, detailProgress, allNodes, updateNodeWithLog, recalcParentProgress, t]);
+  }, [selectedNodeId, detailTitle, detailDesc, detailStatus, detailUrgency, detailImportance, detailProgress, allNodes, updateNodeWithLog, propagateCompletion, t]);
 
   const handleMergeToProject = useCallback(
     (node: Node, projectId: string) => {
@@ -268,29 +525,6 @@ export function MandaratView() {
     },
     [moveNode, zoomedNode, rootNode]
   );
-
-  const handleNewRootGoal = useCallback(() => {
-    if (!projects[0]?.id) return;
-    const goal = createNode({
-      workspaceId: 'demo-workspace',
-      type: 'goal',
-      title: '',
-      projectId: projects[0].id,
-      parentId: null,
-    });
-    addNodeWithLog(goal);
-    setSelectedNodeId(goal.id);
-    setDetailTitle('');
-    setDetailDesc('');
-    setDetailStatus('scheduled');
-    setDetailUrgency(3);
-    setDetailImportance(3);
-    setDetailProgress(0);
-    setInlineEditId(goal.id);
-    setInlineTitle('');
-  }, [projects, addNodeWithLog]);
-
-  const selectedNode = selectedNodeId ? allNodes[selectedNodeId] : null;
 
   // ===== RENDER =====
   return (
@@ -354,6 +588,15 @@ export function MandaratView() {
               {aiGenerating ? t.mandarat.aiGenerating : t.mandarat.aiGenerate}
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            onClick={() => { setNewProjectTitle(''); setProjectDialogOpen(true); }}
+          >
+            <FolderPlus className="size-3" />
+            {t.mandarat.newProject}
+          </Button>
           <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={handleNewRootGoal}>
             <Plus className="size-3" />
             {t.mandarat.newGoal}
@@ -368,7 +611,15 @@ export function MandaratView() {
           {!effectiveProjectId ? (
             <div className="flex flex-col items-center justify-center gap-3 py-20 text-muted-foreground">
               <Target className="size-12 opacity-20" />
-              <p className="text-sm">{t.mandarat.noGoals}</p>
+              <p className="text-sm">{t.mandarat.noProjects}</p>
+              <Button
+                size="sm"
+                className="gap-1.5"
+                onClick={() => { setNewProjectTitle(''); setProjectDialogOpen(true); }}
+              >
+                <FolderPlus className="size-4" />
+                {t.mandarat.createProject}
+              </Button>
             </div>
           ) : viewMode === 'grid' ? (
             <MandaratGrid
@@ -378,9 +629,6 @@ export function MandaratView() {
               selectedNodeId={selectedNodeId}
               inlineEditId={inlineEditId}
               inlineTitle={inlineTitle}
-              addingChildFor={addingChildFor}
-              newChildTitle={newChildTitle}
-              allNodes={allNodes}
               t={t}
               locale={locale}
               onZoomIn={(n) => setZoomedNodeId(n.id)}
@@ -392,11 +640,10 @@ export function MandaratView() {
                 setInlineEditId(null);
               }}
               onInlineEditCancel={() => setInlineEditId(null)}
-              onAddChildStart={(id) => { setAddingChildFor(id); setNewChildTitle(''); }}
-              onAddChildCancel={() => { setAddingChildFor(null); setNewChildTitle(''); }}
-              onAddChildSave={handleAddChild}
-              onNewChildTitleChange={setNewChildTitle}
               onInlineTitleChange={setInlineTitle}
+              onOpenUnitDialog={openUnitDialog}
+              onToggleComplete={handleToggleComplete}
+              onCreateProject={() => { setNewProjectTitle(''); setProjectDialogOpen(true); }}
             />
           ) : viewMode === 'tree' ? (
             <MandaratTree
@@ -409,7 +656,8 @@ export function MandaratView() {
               dateLocale={dateLocale}
               onToggle={(id) => setZoomedNodeId(zoomedNodeId === id ? null : id)}
               onSelect={handleSelectNode}
-              onAddChild={(parentId) => handleAddChild(parentId, '')}
+              onAddChild={(parentId) => openUnitDialog(parentId)}
+              onToggleComplete={handleToggleComplete}
               onDelete={setDeleteTarget}
             />
           ) : (
@@ -421,11 +669,12 @@ export function MandaratView() {
               locale={locale}
               dateLocale={dateLocale}
               onSelect={handleSelectNode}
+              onToggleComplete={handleToggleComplete}
             />
           )}
 
           {/* Unsorted items */}
-          {unsortedNodes.length > 0 && (
+          {unsortedNodes.length > 0 && effectiveProjectId && (
             <div className="mt-6">
               <Separator className="mb-4" />
               <div className="flex items-center gap-2 mb-3">
@@ -466,6 +715,29 @@ export function MandaratView() {
             </div>
             <ScrollArea className="flex-1">
               <div className="space-y-3 pr-3">
+                {/* 단위 종류 */}
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={selectedNode.kind === 'task' ? 'default' : 'secondary'}
+                    className="text-[10px] h-5 px-1.5 gap-1"
+                  >
+                    {selectedNode.kind === 'task'
+                      ? <><Zap className="size-2.5" />{t.mandarat.kindTask}</>
+                      : <><FolderTree className="size-2.5" />{t.mandarat.kindProject}</>}
+                  </Badge>
+                  {selectedNode.kind === 'task' && (
+                    <Button
+                      size="sm"
+                      variant={selectedNode.status === 'completed' ? 'default' : 'outline'}
+                      className="h-6 gap-1 text-[11px] ml-auto"
+                      onClick={() => handleToggleComplete(selectedNode)}
+                    >
+                      <Check className="size-3" />
+                      {selectedNode.status === 'completed' ? t.mandarat.markIncomplete : t.mandarat.markComplete}
+                    </Button>
+                  )}
+                </div>
+
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">{t.mandarat.nodeTitlePlaceholder.replace('목표를 입력하세요', '제목')}</label>
                   <Input
@@ -483,6 +755,140 @@ export function MandaratView() {
                     placeholder={t.mandarat.nodeDescPlaceholder}
                   />
                 </div>
+
+                {/* --- task: 완료 기준 에디터 --- */}
+                {selectedNode.kind === 'task' && (
+                  <div className="rounded-lg border p-2.5 space-y-2">
+                    <label className="text-xs font-medium block">{t.mandarat.completionCriteria}</label>
+                    <Select
+                      value={selectedNode.completion?.mode ?? 'manual'}
+                      onValueChange={(v) => handleSetCompletionMode(selectedNode, v as CompletionMode)}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="manual">{t.mandarat.completionManual}</SelectItem>
+                        <SelectItem value="deliverable">{t.mandarat.completionDeliverable}</SelectItem>
+                        <SelectItem value="checklist">{t.mandarat.completionChecklist}</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    {selectedNode.completion?.mode === 'deliverable' && (
+                      <div>
+                        <label className="text-[10px] text-muted-foreground mb-1 block">{t.mandarat.deliverable}</label>
+                        <Input
+                          value={deliverableInput}
+                          onChange={(e) => setDeliverableInput(e.target.value)}
+                          onBlur={() => handleSaveDeliverable(selectedNode, deliverableInput)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleSaveDeliverable(selectedNode, deliverableInput); }}
+                          placeholder={t.mandarat.deliverablePlaceholder}
+                          className="h-8 text-xs"
+                        />
+                      </div>
+                    )}
+
+                    {selectedNode.completion?.mode === 'checklist' && (
+                      <div className="space-y-1.5">
+                        {selectedNode.completion.items.map((item) => (
+                          <div key={item.id} className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => {
+                                const c = selectedNode.completion;
+                                if (c?.mode !== 'checklist') return;
+                                applyChecklist(
+                                  selectedNode,
+                                  c.items.map((i) => (i.id === item.id ? { ...i, done: !i.done } : i))
+                                );
+                              }}
+                              className="shrink-0 text-muted-foreground hover:text-primary"
+                            >
+                              {item.done ? <CheckSquare className="size-3.5 text-primary" /> : <Square className="size-3.5" />}
+                            </button>
+                            <span className={cn('text-xs flex-1 truncate', item.done && 'line-through text-muted-foreground')}>
+                              {item.label}
+                            </span>
+                            <button
+                              onClick={() => {
+                                const c = selectedNode.completion;
+                                if (c?.mode !== 'checklist') return;
+                                applyChecklist(selectedNode, c.items.filter((i) => i.id !== item.id));
+                              }}
+                              className="shrink-0 text-muted-foreground hover:text-destructive"
+                            >
+                              <X className="size-3" />
+                            </button>
+                          </div>
+                        ))}
+                        <div className="flex items-center gap-1">
+                          <Input
+                            value={newChecklistLabel}
+                            onChange={(e) => setNewChecklistLabel(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter') return;
+                              const c = selectedNode.completion;
+                              if (c?.mode !== 'checklist' || !newChecklistLabel.trim()) return;
+                              applyChecklist(selectedNode, [
+                                ...c.items,
+                                { id: generateId(), label: newChecklistLabel.trim(), done: false },
+                              ]);
+                              setNewChecklistLabel('');
+                            }}
+                            placeholder={t.mandarat.checklistItemPlaceholder}
+                            className="h-7 text-xs"
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 shrink-0"
+                            onClick={() => {
+                              const c = selectedNode.completion;
+                              if (c?.mode !== 'checklist' || !newChecklistLabel.trim()) return;
+                              applyChecklist(selectedNode, [
+                                ...c.items,
+                                { id: generateId(), label: newChecklistLabel.trim(), done: false },
+                              ]);
+                              setNewChecklistLabel('');
+                            }}
+                          >
+                            <Plus className="size-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* --- project: 하위 완료 요약 --- */}
+                {selectedNode.kind === 'project' && (
+                  <div className="rounded-lg border p-2.5 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      {t.mandarat.childProgressSummary
+                        .replace('{total}', String(selectedChildren.length))
+                        .replace('{done}', String(selectedChildren.filter((c) => c.status === 'completed').length))}
+                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs">{t.mandarat.autoComplete}</label>
+                      <Switch
+                        checked={selectedNode.autoCompleteFromChildren}
+                        onCheckedChange={(v) => {
+                          updateNodeWithLog(selectedNode.id, { autoCompleteFromChildren: v });
+                          recalcParentProgress(selectedNode.id);
+                        }}
+                      />
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 w-full gap-1 text-xs"
+                      onClick={() => openUnitDialog(selectedNode.id)}
+                    >
+                      <Plus className="size-3" />
+                      {t.mandarat.addUnit}
+                    </Button>
+                  </div>
+                )}
+
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">{t.todo.priority}</label>
                   <div className="flex items-center gap-2">
@@ -561,6 +967,141 @@ export function MandaratView() {
         )}
       </div>
 
+      {/* 새 프로젝트 다이얼로그 */}
+      <Dialog open={projectDialogOpen} onOpenChange={setProjectDialogOpen}>
+        <DialogContent className="sm:max-w-[380px]">
+          <DialogHeader>
+            <DialogTitle>{t.mandarat.createProject}</DialogTitle>
+            <DialogDescription>{t.mandarat.projectTitlePlaceholder}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">{t.mandarat.projectTitle}</label>
+            <Input
+              autoFocus
+              value={newProjectTitle}
+              onChange={(e) => setNewProjectTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateProject(newProjectTitle); }}
+              placeholder={t.mandarat.projectTitlePlaceholder}
+              className="h-9 text-sm"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setProjectDialogOpen(false)}>
+              {t.common.cancel}
+            </Button>
+            <Button size="sm" onClick={() => handleCreateProject(newProjectTitle)}>
+              {t.common.add}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 단위(task/project) 추가 다이얼로그 */}
+      <Dialog open={!!unitDraft} onOpenChange={(open) => !open && setUnitDraft(null)}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>{t.mandarat.addUnit}</DialogTitle>
+            <DialogDescription>
+              {unitDraft?.kind === 'task' ? t.mandarat.kindTaskDesc : t.mandarat.kindProjectDesc}
+            </DialogDescription>
+          </DialogHeader>
+
+          {unitDraft && (
+            <div className="space-y-3">
+              {/* 제목 */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-muted-foreground">{t.mandarat.nodeTitlePlaceholder}</label>
+                <Input
+                  autoFocus
+                  value={unitDraft.title}
+                  onChange={(e) => setUnitDraft({ ...unitDraft, title: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveUnit(); }}
+                  placeholder={t.mandarat.nodeTitlePlaceholder}
+                  className="h-9 text-sm"
+                />
+              </div>
+
+              {/* task / project 토글 */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-muted-foreground">{t.mandarat.unitKind}</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    { kind: 'task' as NodeKind, icon: Zap, label: t.mandarat.kindTask, desc: t.mandarat.kindTaskDesc },
+                    { kind: 'project' as NodeKind, icon: FolderTree, label: t.mandarat.kindProject, desc: t.mandarat.kindProjectDesc },
+                  ]).map(({ kind, icon: Icon, label, desc }) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      onClick={() => setUnitDraft({ ...unitDraft, kind })}
+                      className={cn(
+                        'rounded-lg border p-2.5 text-left transition-colors',
+                        unitDraft.kind === kind
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border hover:border-primary/40'
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Icon className="size-3.5 text-primary" />
+                        <span className="text-xs font-medium">{label}</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 완료 기준 (task 전용) */}
+              {unitDraft.kind === 'task' && (
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">{t.mandarat.completionCriteria}</label>
+                  <Select
+                    value={unitDraft.completionMode}
+                    onValueChange={(v) => setUnitDraft({ ...unitDraft, completionMode: v as CompletionMode })}
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="manual">{t.mandarat.completionManual}</SelectItem>
+                      <SelectItem value="deliverable">{t.mandarat.completionDeliverable}</SelectItem>
+                      <SelectItem value="checklist">{t.mandarat.completionChecklist}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {unitDraft.completionMode === 'deliverable' && (
+                    <Input
+                      value={unitDraft.deliverableRef}
+                      onChange={(e) => setUnitDraft({ ...unitDraft, deliverableRef: e.target.value })}
+                      placeholder={t.mandarat.deliverablePlaceholder}
+                      className="h-9 text-xs"
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* 날짜 */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-muted-foreground">{t.mandarat.dueDateLabel}</label>
+                <Input
+                  type="date"
+                  value={unitDraft.dueDate}
+                  onChange={(e) => setUnitDraft({ ...unitDraft, dueDate: e.target.value })}
+                  className="h-9 text-xs"
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setUnitDraft(null)}>
+              {t.common.cancel}
+            </Button>
+            <Button size="sm" onClick={handleSaveUnit}>
+              {t.common.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete confirmation dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
@@ -587,30 +1128,32 @@ export function MandaratView() {
 
 // ===== Mandarat Grid Component =====
 function MandaratGrid({
-  rootNode, zoomedNode, coreGoals, selectedNodeId, inlineEditId, inlineTitle,
-  addingChildFor, newChildTitle, allNodes, t, locale,
+  rootNode, zoomedNode, coreGoals, selectedNodeId, inlineEditId, inlineTitle, t, locale,
   onZoomIn, onZoomOut, onSelect, onInlineEditStart, onInlineEditSave, onInlineEditCancel,
-  onAddChildStart, onAddChildCancel, onAddChildSave, onNewChildTitleChange, onInlineTitleChange,
+  onInlineTitleChange, onOpenUnitDialog, onToggleComplete, onCreateProject,
 }: {
   rootNode: Node | null; zoomedNode: Node | null; coreGoals: Node[];
   selectedNodeId: string | null; inlineEditId: string | null; inlineTitle: string;
-  addingChildFor: string | null; newChildTitle: string; allNodes: Record<string, Node>;
   t: any; locale: string;
   onZoomIn: (n: Node) => void; onZoomOut: () => void;
   onSelect: (n: Node) => void;
   onInlineEditStart: (n: Node) => void;
   onInlineEditSave: (id: string, title: string) => void;
   onInlineEditCancel: () => void;
-  onAddChildStart: (id: string) => void;
-  onAddChildCancel: () => void;
-  onAddChildSave: (parentId: string, title: string) => void;
-  onNewChildTitleChange: (v: string) => void;
   onInlineTitleChange: (v: string) => void;
+  onOpenUnitDialog: (parentId: string, existing?: Node | null) => void;
+  onToggleComplete: (n: Node) => void;
+  onCreateProject: () => void;
 }) {
   if (!zoomedNode) {
     return (
-      <div className="flex items-center justify-center py-20 text-muted-foreground">
-        <p className="text-sm">{t.mandarat.noGoals}</p>
+      <div className="flex flex-col items-center justify-center gap-3 py-20 text-muted-foreground">
+        <Target className="size-12 opacity-20" />
+        <p className="text-sm">{t.mandarat.noProjects}</p>
+        <Button size="sm" className="gap-1.5" onClick={onCreateProject}>
+          <FolderPlus className="size-4" />
+          {t.mandarat.createProject}
+        </Button>
       </div>
     );
   }
@@ -663,10 +1206,11 @@ function MandaratGrid({
           }
 
           if (isEmpty) {
+            // 빈 자리표시자 노드가 있으면 그 노드를 채우고, 없으면 새로 만든다
             return (
               <button
-                key={`empty-${idx}`}
-                onClick={() => zoomedNode && onAddChildStart(zoomedNode.id)}
+                key={node ? `empty-${node.id}` : `empty-${idx}`}
+                onClick={() => onOpenUnitDialog(zoomedNode.id, node)}
                 className="aspect-square rounded-lg border-2 border-dashed border-muted-foreground/20 flex items-center justify-center text-muted-foreground/40 hover:border-primary/40 hover:text-primary/60 transition-colors"
               >
                 <Plus className="size-5" />
@@ -681,21 +1225,17 @@ function MandaratGrid({
               isSelected={selectedNodeId === node.id}
               isEditing={inlineEditId === node.id}
               editTitle={inlineTitle}
-              addingChild={addingChildFor === node.id}
-              newChildTitle={newChildTitle}
               childCount={node.childrenIds.length}
               t={t}
               locale={locale}
               onEditTitleChange={onInlineTitleChange}
-              onNewChildTitleChange={onNewChildTitleChange}
               onSelect={() => onSelect(node)}
               onDoubleClick={() => onInlineEditStart(node)}
               onZoomIn={() => onZoomIn(node)}
               onEditSave={() => onInlineEditSave(node.id, inlineTitle)}
               onEditCancel={onInlineEditCancel}
-              onAddChildStart={() => onAddChildStart(node.id)}
-              onAddChildCancel={onAddChildCancel}
-              onAddChildSave={() => onAddChildSave(node.id, newChildTitle)}
+              onAddChildStart={() => onOpenUnitDialog(node.id)}
+              onToggleComplete={() => onToggleComplete(node)}
             />
           );
         })}
@@ -765,18 +1305,16 @@ function CenterCell({ node, isSelected, isEditing, editTitle, t, onEditTitleChan
 }
 
 // ===== Goal Cell =====
-function GoalCell({ node, isSelected, isEditing, editTitle, addingChild, newChildTitle, childCount, t, locale, onEditTitleChange, onNewChildTitleChange, onSelect, onDoubleClick, onZoomIn, onEditSave, onEditCancel, onAddChildStart, onAddChildCancel, onAddChildSave }: {
+function GoalCell({ node, isSelected, isEditing, editTitle, childCount, t, locale, onEditTitleChange, onSelect, onDoubleClick, onZoomIn, onEditSave, onEditCancel, onAddChildStart, onToggleComplete }: {
   node: Node; isSelected: boolean; isEditing: boolean; editTitle: string;
-  addingChild: boolean; newChildTitle: string; childCount: number; t: any; locale: string;
-  onEditTitleChange: (v: string) => void; onNewChildTitleChange: (v: string) => void;
+  childCount: number; t: any; locale: string;
+  onEditTitleChange: (v: string) => void;
   onSelect: () => void; onDoubleClick: () => void; onZoomIn: () => void;
   onEditSave: () => void; onEditCancel: () => void;
-  onAddChildStart: () => void; onAddChildCancel: () => void; onAddChildSave: () => void;
+  onAddChildStart: () => void; onToggleComplete: () => void;
 }) {
-  const statusLabel = (status: string) => {
-    const key = status as keyof typeof t.status;
-    return t.status[key] ?? status;
-  };
+  const isTask = node.kind === 'task';
+  const isDone = node.status === 'completed';
 
   return (
     <motion.div
@@ -788,6 +1326,7 @@ function GoalCell({ node, isSelected, isEditing, editTitle, addingChild, newChil
         isSelected
           ? 'border-primary bg-primary/5 shadow-sm'
           : 'border-border bg-card hover:border-primary/40 hover:shadow-sm',
+        isDone && 'border-emerald-400/50 bg-emerald-50 dark:bg-emerald-950/20',
         node.aiMeta?.status === 'draft' && 'border-amber-400/50 bg-amber-50 dark:bg-amber-950/20'
       )}
       onClick={onSelect}
@@ -808,25 +1347,17 @@ function GoalCell({ node, isSelected, isEditing, editTitle, addingChild, newChil
             <Button size="sm" variant="ghost" className="h-5 w-5 p-0" onClick={onEditCancel}><X className="size-3" /></Button>
           </div>
         </div>
-      ) : addingChild ? (
-        <div className="flex flex-col gap-1 w-full h-full" onClick={(e) => e.stopPropagation()}>
-          <span className="text-[10px] text-muted-foreground">{t.mandarat.addChild}</span>
-          <input
-            autoFocus
-            value={newChildTitle}
-            onChange={(e) => onNewChildTitleChange(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onAddChildSave(); if (e.key === 'Escape') onAddChildCancel(); }}
-            className="w-full text-xs bg-transparent border-b border-primary outline-none text-center"
-            placeholder={t.mandarat.nodeTitlePlaceholder}
-          />
-          <div className="flex gap-1 justify-center mt-auto">
-            <Button size="sm" className="h-5 w-5 p-0" onClick={onAddChildSave}><Check className="size-3" /></Button>
-            <Button size="sm" variant="ghost" className="h-5 w-5 p-0" onClick={onAddChildCancel}><X className="size-3" /></Button>
-          </div>
-        </div>
       ) : (
         <>
-          <p className="text-xs font-medium leading-tight line-clamp-3 flex-1 flex items-center justify-center">
+          {/* 단위 아이콘 */}
+          <div className="absolute top-1 left-1 text-muted-foreground/60">
+            {isTask ? <Zap className="size-2.5" /> : <FolderTree className="size-2.5" />}
+          </div>
+
+          <p className={cn(
+            'text-xs font-medium leading-tight line-clamp-3 flex-1 flex items-center justify-center',
+            isDone && 'line-through text-muted-foreground'
+          )}>
             {node.title || t.mandarat.nodeTitlePlaceholder}
           </p>
           <div className="mt-1 w-full">
@@ -843,11 +1374,25 @@ function GoalCell({ node, isSelected, isEditing, editTitle, addingChild, newChil
               </button>
             )}
           </div>
-          {/* Hover action buttons */}
-          <div className="absolute top-1 right-1 hidden group-hover:flex gap-0.5">
+
+          {/* Hover / 상시 액션 버튼 */}
+          <div className="absolute top-1 right-1 flex gap-0.5">
+            {isTask && (
+              <button
+                title={isDone ? t.mandarat.markIncomplete : t.mandarat.markComplete}
+                onClick={(e) => { e.stopPropagation(); onToggleComplete(); }}
+                className={cn(
+                  'size-4 flex items-center justify-center rounded bg-background/80',
+                  isDone ? 'text-emerald-600' : 'text-muted-foreground hover:text-primary'
+                )}
+              >
+                {isDone ? <CheckSquare className="size-3" /> : <Square className="size-3" />}
+              </button>
+            )}
             <button
+              title={t.mandarat.addUnit}
               onClick={(e) => { e.stopPropagation(); onAddChildStart(); }}
-              className="size-4 flex items-center justify-center rounded bg-background/80 text-muted-foreground hover:text-primary"
+              className="size-4 hidden group-hover:flex items-center justify-center rounded bg-background/80 text-muted-foreground hover:text-primary"
             >
               <Plus className="size-2.5" />
             </button>
@@ -859,11 +1404,12 @@ function GoalCell({ node, isSelected, isEditing, editTitle, addingChild, newChil
 }
 
 // ===== Tree View =====
-function MandaratTree({ rootNode, allNodes, selectedNodeId, expanded, t, locale, dateLocale, onToggle, onSelect, onAddChild, onDelete }: {
+function MandaratTree({ rootNode, allNodes, selectedNodeId, expanded, t, locale, dateLocale, onToggle, onSelect, onAddChild, onToggleComplete, onDelete }: {
   rootNode: Node | null; allNodes: Record<string, Node>; selectedNodeId: string | null;
   expanded: Set<string>; t: any; locale: string; dateLocale: Locale | undefined;
   onToggle: (id: string) => void; onSelect: (n: Node) => void;
-  onAddChild: (parentId: string) => void; onDelete: (n: Node) => void;
+  onAddChild: (parentId: string) => void; onToggleComplete: (n: Node) => void;
+  onDelete: (n: Node) => void;
 }) {
   const getChildNodes = (parentId: string) =>
     Object.values(allNodes).filter((n) => n.parentId === parentId);
@@ -872,6 +1418,8 @@ function MandaratTree({ rootNode, allNodes, selectedNodeId, expanded, t, locale,
     const children = getChildNodes(node.id);
     const isExpanded = expanded.has(node.id);
     const isSelected = selectedNodeId === node.id;
+    const isTask = node.kind === 'task';
+    const isDone = node.status === 'completed';
     const statusLabel = (status: string) => {
       const key = status as keyof typeof t.status;
       return t.status[key] ?? status;
@@ -894,8 +1442,24 @@ function MandaratTree({ rootNode, allNodes, selectedNodeId, expanded, t, locale,
           ) : (
             <span className="w-3.5 shrink-0" />
           )}
-          <Target className="size-3.5 text-primary shrink-0" />
-          <span className="text-sm font-medium truncate flex-1">{node.title || t.mandarat.nodeTitlePlaceholder}</span>
+
+          {isTask ? (
+            <button
+              title={isDone ? t.mandarat.markIncomplete : t.mandarat.markComplete}
+              onClick={(e) => { e.stopPropagation(); onToggleComplete(node); }}
+              className="shrink-0"
+            >
+              {isDone
+                ? <CheckSquare className="size-3.5 text-emerald-600" />
+                : <Square className="size-3.5 text-muted-foreground hover:text-primary" />}
+            </button>
+          ) : (
+            <Target className="size-3.5 text-primary shrink-0" />
+          )}
+
+          <span className={cn('text-sm font-medium truncate flex-1', isDone && 'line-through text-muted-foreground')}>
+            {node.title || t.mandarat.nodeTitlePlaceholder}
+          </span>
           <Badge variant="secondary" className="text-[10px] h-4 px-1 shrink-0">
             {statusLabel(node.status)}
           </Badge>
@@ -947,10 +1511,10 @@ function MandaratTree({ rootNode, allNodes, selectedNodeId, expanded, t, locale,
 }
 
 // ===== List View =====
-function MandaratList({ projectId, allNodes, selectedNodeId, t, locale, dateLocale, onSelect }: {
+function MandaratList({ projectId, allNodes, selectedNodeId, t, locale, dateLocale, onSelect, onToggleComplete }: {
   projectId: string; allNodes: Record<string, Node>; selectedNodeId: string | null;
   t: any; locale: string; dateLocale: Locale | undefined;
-  onSelect: (n: Node) => void;
+  onSelect: (n: Node) => void; onToggleComplete: (n: Node) => void;
 }) {
   const nodes = Object.values(allNodes)
     .filter((n) => n.projectId === projectId)
@@ -973,17 +1537,16 @@ function MandaratList({ projectId, allNodes, selectedNodeId, t, locale, dateLoca
     return t.status[key] ?? status;
   };
 
-  const typeLabel = (type: string) => {
-    if (type === 'calendar_event') return t.chat.typeEvent;
-    if (type === 'todo') return t.chat.typeTodo;
-    return t.chat.typeGoal;
-  };
+  const typeLabel = (node: Node) =>
+    node.kind === 'task' ? t.mandarat.kindTask : t.mandarat.kindProject;
 
   return (
     <div className="space-y-1.5">
       {nodes.map((node, idx) => {
         const chain = getParentChain(node);
         const isSelected = selectedNodeId === node.id;
+        const isTask = node.kind === 'task';
+        const isDone = node.status === 'completed';
         return (
           <motion.div
             key={node.id}
@@ -996,16 +1559,31 @@ function MandaratList({ projectId, allNodes, selectedNodeId, t, locale, dateLoca
             )}
             onClick={() => onSelect(node)}
           >
+            {isTask ? (
+              <button
+                title={isDone ? t.mandarat.markIncomplete : t.mandarat.markComplete}
+                onClick={(e) => { e.stopPropagation(); onToggleComplete(node); }}
+                className="shrink-0"
+              >
+                {isDone
+                  ? <CheckSquare className="size-4 text-emerald-600" />
+                  : <Square className="size-4 text-muted-foreground hover:text-primary" />}
+              </button>
+            ) : (
+              <FolderTree className="size-4 text-primary shrink-0" />
+            )}
             <div className="min-w-0 flex-1">
               {chain.length > 0 && (
                 <p className="text-[10px] text-muted-foreground truncate mb-0.5">
                   {chain.join(' > ')}
                 </p>
               )}
-              <p className="text-sm font-medium truncate">{node.title || t.mandarat.nodeTitlePlaceholder}</p>
+              <p className={cn('text-sm font-medium truncate', isDone && 'line-through text-muted-foreground')}>
+                {node.title || t.mandarat.nodeTitlePlaceholder}
+              </p>
             </div>
             <Badge variant="secondary" className="text-[10px] h-5 px-1.5 shrink-0">
-              {typeLabel(node.type)}
+              {typeLabel(node)}
             </Badge>
             <Badge variant="outline" className="text-[10px] h-5 px-1.5 shrink-0">
               {statusLabel(node.status)}

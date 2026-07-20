@@ -10,12 +10,20 @@ import { ko as koLocale } from 'date-fns/locale';
 import {
   CheckCircle2,
   Plus,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { NodeDetailSheet } from '@/components/shared/node-detail-sheet';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import type { Node } from '@/lib/types';
 
@@ -23,10 +31,15 @@ export function TodoView() {
   const { t } = useLocale();
   const [tab, setTab] = useState('today');
   const [quickInput, setQuickInput] = useState('');
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Node | null>(null);
 
   const allNodes = useNodeStore((s) => s.nodes);
   const addNode = useNodeStore((s) => s.addNode);
   const toggleNodeStatus = useNodeStore((s) => s.toggleNodeStatus);
+  const updateNodeWithLog = useNodeStore((s) => s.updateNodeWithLog);
+  const removeNodeWithLog = useNodeStore((s) => s.removeNodeWithLog);
+  const recalcParentProgress = useNodeStore((s) => s.recalcParentProgress);
   const getColor = useCategoryStore((s) => s.getColor);
   const projects = useProjectStore((s) => s.projects);
   const setView = useNavStore((s) => s.setView);
@@ -102,6 +115,27 @@ export function TodoView() {
     setQuickInput('');
   }, [quickInput, addNode, todayStart, todayEnd]);
 
+  /** 삭제 시 부모의 childrenIds에서도 떼어내고 상위 진행률을 다시 굴린다. */
+  const handleDelete = useCallback(
+    (node: Node) => {
+      const parentId = node.parentId;
+      if (parentId) {
+        const parent = allNodes[parentId];
+        if (parent) {
+          updateNodeWithLog(parentId, {
+            childrenIds: parent.childrenIds.filter((c) => c !== node.id),
+          });
+        }
+      }
+      removeNodeWithLog(node.id);
+      if (parentId) recalcParentProgress(parentId);
+      setDeleteTarget(null);
+      if (detailNodeId === node.id) setDetailNodeId(null);
+      toast.success(t.nodeDetail.deleted);
+    },
+    [allNodes, updateNodeWithLog, removeNodeWithLog, recalcParentProgress, detailNodeId, t]
+  );
+
   const priorityDotColor = (urgency: number) => {
     if (urgency >= 4) return 'bg-red-500';
     if (urgency >= 2) return 'bg-amber-500';
@@ -140,7 +174,17 @@ export function TodoView() {
           onCheckedChange={() => toggleNodeStatus(node.id)}
           className="mt-0.5"
         />
-        <div className="min-w-0 flex-1">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setDetailNodeId(node.id)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            setDetailNodeId(node.id);
+          }}
+          className="min-w-0 flex-1 cursor-pointer"
+        >
           <div className="flex items-center gap-2">
             <span
               className={cn(
@@ -175,6 +219,28 @@ export function TodoView() {
               </span>
             )}
           </div>
+        </div>
+
+        {/* 수정 / 삭제 */}
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 text-muted-foreground hover:text-foreground"
+            aria-label={t.nodeDetail.edit}
+            onClick={() => setDetailNodeId(node.id)}
+          >
+            <Pencil className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 text-muted-foreground hover:text-destructive"
+            aria-label={t.common.delete}
+            onClick={() => setDeleteTarget(node)}
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
         </div>
       </motion.div>
     );
@@ -247,6 +313,35 @@ export function TodoView() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <NodeDetailSheet
+        nodeId={detailNodeId}
+        open={detailNodeId !== null}
+        onOpenChange={(o) => !o && setDetailNodeId(null)}
+      />
+
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.nodeDetail.deleteTitle}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t.nodeDetail.deleteConfirm}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteTarget && handleDelete(deleteTarget)}
+            >
+              {t.common.delete}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

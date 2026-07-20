@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { useNavStore } from '@/lib/store';
 import { useLocale } from '@/hooks/use-locale';
@@ -13,6 +14,10 @@ import {
   FileText,
   ScrollText,
   Shield,
+  Users,
+  Database,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import {
   Sheet,
@@ -31,66 +36,179 @@ import { MandaratView } from '@/components/mandarat/mandarat-view';
 import { SettingsView } from '@/components/settings/settings-view';
 import { AdminView } from '@/components/admin/admin-view';
 import { ActivityLogView } from '@/components/log/activity-log-view';
+import { PeopleView } from '@/components/people/people-view';
+import { DataView } from '@/components/data/data-view';
+import { ChatPanel } from '@/components/chat/chat-panel';
 
-const tabs: { view: AppView; icon: typeof LayoutDashboard; labelKey: 'dashboard' | 'calendar' | 'todo' | 'mandarat' | 'drafts' | 'settings' }[] = [
-  { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
-  { view: 'calendar', icon: CalendarDays, labelKey: 'calendar' },
-  { view: 'todo', icon: CheckSquare, labelKey: 'todo' },
-];
+const SWIPE_VIEWS = ['todo', 'calendar', 'mandarat'] as const;
+type SwipeView = (typeof SWIPE_VIEWS)[number];
 
-function ViewSwitcher({ view }: { view: AppView }) {
+const swipeLabels: Record<SwipeView, { icon: typeof CalendarDays; labelKey: string }> = {
+  todo: { icon: CheckSquare, labelKey: 'todo' },
+  calendar: { icon: CalendarDays, labelKey: 'calendar' },
+  mandarat: { icon: LayoutGrid, labelKey: 'mandarat' },
+};
+
+function SwipeContent({ view }: { view: SwipeView }) {
+  switch (view) {
+    case 'todo':
+      return <TodoView />;
+    case 'calendar':
+      return <CalendarView />;
+    case 'mandarat':
+      return <MandaratView />;
+  }
+}
+
+function OtherContent({ view }: { view: AppView }) {
   switch (view) {
     case 'dashboard':
       return <DashboardView />;
-    case 'calendar':
-      return <CalendarView />;
-    case 'todo':
-      return <TodoView />;
-    case 'mandarat':
-      return <MandaratView />;
     case 'drafts':
       return <DraftInbox />;
     case 'admin':
       return <AdminView />;
     case 'log':
       return <ActivityLogView />;
+    case 'people':
+      return <PeopleView />;
+    case 'data':
+      return <DataView />;
     case 'settings':
       return <SettingsView />;
     default:
-      return <DashboardView />;
+      return null;
   }
 }
 
 export function MobileShell() {
-  const mobileTab = useNavStore((s) => s.mobileTab);
-  const setMobileTab = useNavStore((s) => s.setMobileTab);
   const { t } = useLocale();
+
+  const [swipeIndex, setSwipeIndex] = useState(1); // 0=todo, 1=calendar, 2=mandarat
+  const [otherView, setOtherView] = useState<AppView | null>(null);
+
+  // activeView를 단일 진실 원천으로 유지한다.
+  // 모바일 자체 네비게이션도 setView를 호출하므로, 다른 화면(예: 관리자의
+  // "데이터 관리 열기")에서 setView로 들어오는 요청과 상태가 어긋나지 않는다.
+  const activeView = useNavStore((s) => s.activeView);
+  const setView = useNavStore((s) => s.setView);
+  useEffect(() => {
+    if ((SWIPE_VIEWS as readonly string[]).includes(activeView)) {
+      setSwipeIndex(SWIPE_VIEWS.indexOf(activeView as SwipeView));
+      setOtherView(null);
+    } else {
+      setOtherView(activeView);
+    }
+  }, [activeView]);
+
+  // Swipe handling
+  const touchStartX = useRef(0);
+  const touchStartY = useRef(0);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+    touchStartY.current = e.touches[0].clientY;
+  }, []);
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent) => {
+      const dx = e.changedTouches[0].clientX - touchStartX.current;
+      const dy = e.changedTouches[0].clientY - touchStartY.current;
+      if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return;
+
+      const next =
+        dx > 0 && swipeIndex > 0
+          ? swipeIndex - 1
+          : dx < 0 && swipeIndex < SWIPE_VIEWS.length - 1
+            ? swipeIndex + 1
+            : swipeIndex;
+      if (next !== swipeIndex) setView(SWIPE_VIEWS[next]);
+    },
+    [swipeIndex, setView],
+  );
+
+  const currentSwipeView = SWIPE_VIEWS[swipeIndex];
+
+  const handleNavSwipe = (idx: number) => setView(SWIPE_VIEWS[idx]);
+  const handleOtherNav = (view: AppView) => setView(view);
+
+  const isSwipeMode = otherView === null;
+  const showView = isSwipeMode ? currentSwipeView : otherView;
 
   return (
     <div className="flex h-dvh flex-col bg-background">
+      {/* Swipe indicator dots */}
+      {isSwipeMode && (
+        <div className="flex items-center justify-center gap-3 border-b bg-background/95 px-4 py-2 backdrop-blur-sm">
+          {SWIPE_VIEWS.map((v, i) => {
+            const info = swipeLabels[v];
+            const Icon = info.icon;
+            const active = i === swipeIndex;
+            return (
+              <button
+                key={v}
+                onClick={() => handleNavSwipe(i)}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all',
+                  active
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground',
+                )}
+              >
+                <Icon className="size-3.5" />
+                {(t.nav as any)[info.labelKey]}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Content area */}
-      <main className="flex-1 overflow-y-auto">
-        <ViewSwitcher view={mobileTab} />
+      <main
+        className="flex-1 overflow-y-auto"
+        onTouchStart={isSwipeMode ? handleTouchStart : undefined}
+        onTouchEnd={isSwipeMode ? handleTouchEnd : undefined}
+      >
+        {isSwipeMode ? (
+          <SwipeContent view={currentSwipeView} />
+        ) : (
+          <OtherContent view={otherView} />
+        )}
       </main>
+
+      {/* AI Chat input bar — always visible above nav */}
+      <ChatPanel />
 
       {/* Bottom tab bar */}
       <nav className="sticky bottom-0 z-40 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm">
         <div className="flex h-14 items-center justify-around px-2">
-          {tabs.map(({ view, icon: Icon, labelKey }) => (
-            <button
-              key={view}
-              onClick={() => setMobileTab(view)}
-              className={cn(
-                'flex flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors',
-                mobileTab === view
-                  ? 'text-primary'
-                  : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              <Icon className="size-5" />
-              <span>{t.nav[labelKey]}</span>
-            </button>
-          ))}
+          {/* Calendar (main) */}
+          <button
+            onClick={() => setView('calendar')}
+            className={cn(
+              'flex flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors',
+              isSwipeMode
+                ? 'text-primary'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <CalendarDays className="size-5" />
+            <span>{t.nav.calendar}</span>
+          </button>
+
+          {/* Dashboard */}
+          <button
+            onClick={() => handleOtherNav('dashboard')}
+            className={cn(
+              'flex flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors',
+              otherView === 'dashboard'
+                ? 'text-primary'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <LayoutDashboard className="size-5" />
+            <span>{t.nav.dashboard}</span>
+          </button>
 
           {/* More button */}
           <Sheet>
@@ -98,7 +216,7 @@ export function MobileShell() {
               <button
                 className={cn(
                   'flex flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors',
-                  'text-muted-foreground hover:text-foreground'
+                  'text-muted-foreground hover:text-foreground',
                 )}
               >
                 <MoreHorizontal className="size-5" />
@@ -113,19 +231,7 @@ export function MobileShell() {
                 <Button
                   variant="ghost"
                   className="justify-start gap-3"
-                  onClick={() => {
-                    setMobileTab('mandarat');
-                  }}
-                >
-                  <LayoutGrid className="size-5 text-muted-foreground" />
-                  {t.nav.mandarat}
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="justify-start gap-3"
-                  onClick={() => {
-                    setMobileTab('drafts');
-                  }}
+                  onClick={() => handleOtherNav('drafts')}
                 >
                   <FileText className="size-5 text-muted-foreground" />
                   {t.nav.drafts}
@@ -133,9 +239,23 @@ export function MobileShell() {
                 <Button
                   variant="ghost"
                   className="justify-start gap-3"
-                  onClick={() => {
-                    setMobileTab('settings');
-                  }}
+                  onClick={() => handleOtherNav('people')}
+                >
+                  <Users className="size-5 text-muted-foreground" />
+                  {t.nav.people}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => handleOtherNav('data')}
+                >
+                  <Database className="size-5 text-muted-foreground" />
+                  {t.nav.data}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-3"
+                  onClick={() => handleOtherNav('settings')}
                 >
                   <Settings className="size-5 text-muted-foreground" />
                   {t.nav.settings}
@@ -143,9 +263,7 @@ export function MobileShell() {
                 <Button
                   variant="ghost"
                   className="justify-start gap-3"
-                  onClick={() => {
-                    setMobileTab('log');
-                  }}
+                  onClick={() => handleOtherNav('log')}
                 >
                   <ScrollText className="size-5 text-muted-foreground" />
                   {t.log.title}
@@ -153,9 +271,7 @@ export function MobileShell() {
                 <Button
                   variant="ghost"
                   className="justify-start gap-3"
-                  onClick={() => {
-                    setMobileTab('admin');
-                  }}
+                  onClick={() => handleOtherNav('admin')}
                 >
                   <Shield className="size-5 text-muted-foreground" />
                   {t.admin.title}

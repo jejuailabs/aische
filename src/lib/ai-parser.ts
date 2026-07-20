@@ -4,7 +4,7 @@
 // ==========================================
 
 import { createNode } from "./services";
-import type { Node, ScheduleInfo, NodeType, NodeStatus, ParseResult } from "./types";
+import type { Node, ScheduleInfo, NodeType, NodeStatus } from "./types";
 
 // Re-export ParseResult for backward compatibility
 export interface ParseResult {
@@ -281,6 +281,7 @@ export function createDraftNode(
     type: parseResult.type,
     title: parseResult.title,
     description: parseResult.description,
+    projectId: parseResult.suggestedProjectId ?? "unsorted",
     status: "scheduled" as NodeStatus,
     priority: {
       urgency: p.urgency,

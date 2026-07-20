@@ -2,7 +2,22 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-import { useNodeStore, useProjectStore, usePrefStore } from '@/lib/store';
+import {
+  useNodeStore,
+  useProjectStore,
+  useCategoryStore,
+  usePrefStore,
+  usePersonStore,
+  useOrgStore,
+  useCaptureStore,
+} from '@/lib/store';
+import {
+  buildPlan,
+  applyPlan,
+  LAYER_LABEL,
+  type IngestPlan,
+  type PlanLayer,
+} from '@/lib/ingest';
 import { useLocale } from '@/hooks/use-locale';
 import {
   parseUserInput,
@@ -28,6 +43,9 @@ import {
   Pencil,
   FolderOpen,
   Check,
+  Sparkles,
+  Building2,
+  FileText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -52,12 +70,18 @@ interface ProjectMatchData {
 
 interface ChatMessage {
   id: string;
-  role: 'user' | 'ai' | 'draft' | 'project_match';
+  role: 'user' | 'ai' | 'draft' | 'project_match' | 'plan';
   content: string;
   /** Reference to node stored in Zustand — keeps UI in sync after edits / clarification */
   draftNodeId?: string;
   isThinking?: boolean;
   projectMatchData?: ProjectMatchData;
+  /** AI가 분해한 저장 계획 (layered draft) */
+  plan?: IngestPlan;
+  /** 계획이 이미 적용됐는지 */
+  planApplied?: boolean;
+  /** 원본 입력 텍스트 (적용 시 CapturedInput으로 보존) */
+  rawText?: string;
 }
 
 interface ClarificationAwaiting {
@@ -114,7 +138,21 @@ export function ChatPanel() {
   const removeNode = useNodeStore((s) => s.removeNode);
   const nodes = useNodeStore((s) => s.nodes);
   const projects = useProjectStore((s) => s.projects);
+  const addProject = useProjectStore((s) => s.addProject);
+  const categories = useCategoryStore((s) => s.categories);
   const language = usePrefStore((s) => s.language);
+
+  /* ---- 정보 레이어 스토어 ---- */
+  const people = usePersonStore((s) => s.people);
+  const addPerson = usePersonStore((s) => s.addPerson);
+  const updatePerson = usePersonStore((s) => s.updatePerson);
+  const findPerson = usePersonStore((s) => s.findByName);
+  const orgs = useOrgStore((s) => s.orgs);
+  const addOrg = useOrgStore((s) => s.addOrg);
+  const updateOrg = useOrgStore((s) => s.updateOrg);
+  const findOrg = useOrgStore((s) => s.findByName);
+  const addCapture = useCaptureStore((s) => s.addCapture);
+  const updateCapture = useCaptureStore((s) => s.updateCapture);
 
   /* ---- derived ---- */
   const draftCount = Object.values(nodes).filter(
@@ -256,6 +294,75 @@ export function ChatPanel() {
     },
     [projects, t],
   );
+
+  /* ================================================================ */
+  /*  저장 계획 (layered plan)                                         */
+  /* ================================================================ */
+
+  /** 계획 항목 하나를 켜고 끔 */
+  const togglePlanItem = useCallback((msgId: string, idx: number) => {
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== msgId || !m.plan) return m;
+        const items = m.plan.items.map((it, i) =>
+          i === idx ? { ...it, enabled: !it.enabled } : it,
+        );
+        return { ...m, plan: { ...m.plan, items } };
+      }),
+    );
+  }, []);
+
+  /** 계획을 실제로 저장 — 각 층으로 분산 저장 */
+  const handleApplyPlan = useCallback(
+    (msgId: string) => {
+      const msg = messages.find((m) => m.id === msgId);
+      if (!msg?.plan || !msg.rawText) return;
+
+      const result = applyPlan(msg.plan, msg.rawText, 'text', {
+        addNode,
+        addPerson,
+        updatePerson,
+        addOrg,
+        updateOrg,
+        addProject,
+        addCapture,
+        updateCapture,
+        findPerson,
+        findOrg,
+        getPersonById: (id) => usePersonStore.getState().people[id],
+        getOrgById: (id) => useOrgStore.getState().orgs[id],
+      });
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, planApplied: true } : m)),
+      );
+
+      const parts: string[] = [];
+      if (result.nodeIds.length) parts.push(`일정/실행 ${result.nodeIds.length}`);
+      if (result.personIds.length) parts.push(`인물 ${result.personIds.length}`);
+      if (result.orgIds.length) parts.push(`조직 ${result.orgIds.length}`);
+      toast.success(
+        parts.length ? `저장 완료 — ${parts.join(', ')}` : '저장 완료',
+      );
+    },
+    [
+      messages,
+      addNode,
+      addPerson,
+      updatePerson,
+      addOrg,
+      updateOrg,
+      addProject,
+      addCapture,
+      updateCapture,
+      findPerson,
+      findOrg,
+    ],
+  );
+
+  const handleDiscardPlan = useCallback((msgId: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
+  }, []);
 
   /* ================================================================ */
   /*  Draft editing                                                    */
@@ -556,49 +663,60 @@ export function ChatPanel() {
       },
     ]);
 
-    await new Promise((r) => setTimeout(r, 600));
+    /* ---- AI 층 분해 호출 ---- */
+    try {
+      const res = await fetch('/api/ai/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: text,
+          projects: projects.map((p) => ({ id: p.id, title: p.title })),
+          categories: Object.values(categories).map((c) => ({
+            id: c.id,
+            label: c.label,
+          })),
+          people: Object.values(people).map((p) => ({
+            id: p.id,
+            name: p.name,
+            org: p.org,
+          })),
+          organizations: Object.values(orgs).map((o) => ({
+            id: o.id,
+            name: o.name,
+          })),
+          locale: language,
+        }),
+      });
 
-    /* ---- parse & create draft ---- */
-    const result = parseUserInput(text, language);
-    const draft = createDraftNode(result, 'demo-workspace');
-    addNode(draft);
+      if (!res.ok) throw new Error('API error');
+      const extraction = await res.json();
 
-    if (result.missingFields.length > 0) {
-      // replace thinking with draft card, then start clarification
+      const plan = buildPlan(extraction, {
+        projects,
+        findPerson,
+        findOrg,
+      });
+
+      // 계획을 Draft 카드로 표시 — 사용자가 Confirm해야 저장됨
       setMessages((prev) =>
         prev.map((m) =>
           m.id === thinkId
             ? {
                 id: thinkId,
-                role: 'draft' as const,
-                content: t.chat.clarifyingTitle,
-                draftNodeId: draft.id,
+                role: 'plan' as const,
+                content: plan.summary,
+                plan,
+                rawText: text,
+                planApplied: false,
               }
             : m,
         ),
       );
-
-      const firstField = result.missingFields[0];
-      setClarificationState({
-        awaiting: {
-          fieldName: firstField,
-          nodeId: draft.id,
-          remainingFields: result.missingFields,
-        },
-      });
-
-      await new Promise((r) => setTimeout(r, 200));
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString() + 'q',
-          role: 'ai' as const,
-          content: getFieldLabel(firstField),
-        },
-      ]);
-    } else {
-      // no missing fields → confirm card + project match
+    } catch (err) {
+      console.warn('[AI parse] 실패, 로컬 파서로 폴백:', err);
+      const result = parseUserInput(text, language);
+      const draft = createDraftNode(result, 'demo-workspace');
+      addNode(draft);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === thinkId
@@ -611,7 +729,6 @@ export function ChatPanel() {
             : m,
         ),
       );
-      runProjectMatch(draft);
     }
 
     setIsProcessing(false);
@@ -623,6 +740,8 @@ export function ChatPanel() {
     addNode,
     updateNode,
     nodes,
+    projects,
+    categories,
     clarificationState,
     getFieldLabel,
     runProjectMatch,
@@ -632,6 +751,166 @@ export function ChatPanel() {
   /* ================================================================ */
   /*  Render helpers                                                   */
   /* ================================================================ */
+
+  /** 층별 아이콘 */
+  const layerIcon = (layer: PlanLayer) => {
+    switch (layer) {
+      case 'schedule': return CalendarDays;
+      case 'person': return Users;
+      case 'organization': return Building2;
+      case 'project': return FolderOpen;
+      case 'task': return ListChecks;
+      default: return FileText;
+    }
+  };
+
+  /** 층별 색상 */
+  const layerTone = (layer: PlanLayer) => {
+    switch (layer) {
+      case 'schedule': return 'text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950/40';
+      case 'person': return 'text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/40';
+      case 'organization': return 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40';
+      case 'project': return 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40';
+      case 'task': return 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40';
+      default: return 'text-muted-foreground bg-muted';
+    }
+  };
+
+  const actionLabel = (action: string) => {
+    if (action === 'link') return '기존에 연결';
+    if (action === 'merge') return '기존에 배치';
+    return '신규';
+  };
+
+  /** AI가 분해한 저장 계획 카드 */
+  const renderPlanCard = (msg: ChatMessage) => {
+    const plan = msg.plan!;
+    const applied = !!msg.planApplied;
+
+    // 층별로 묶기
+    const grouped = plan.items.reduce<Record<string, { item: typeof plan.items[0]; idx: number }[]>>(
+      (acc, item, idx) => {
+        (acc[item.layer] ??= []).push({ item, idx });
+        return acc;
+      },
+      {},
+    );
+
+    const order: PlanLayer[] = ['schedule', 'task', 'person', 'organization', 'project', 'note'];
+    const enabledCount = plan.items.filter((i) => i.enabled).length;
+
+    return (
+      <div
+        key={msg.id}
+        className="rounded-xl border border-primary/20 bg-primary/5 p-3"
+      >
+        {/* 요약 */}
+        <div className="mb-2 flex items-start gap-2">
+          <Sparkles className="mt-0.5 size-3.5 shrink-0 text-primary" />
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-primary">
+              {applied ? '저장 완료' : '이렇게 나눠서 저장할게요'}
+            </p>
+            <p className="mt-0.5 text-sm leading-snug">{plan.summary}</p>
+          </div>
+        </div>
+
+        {/* 층별 항목 */}
+        <div className="space-y-2 rounded-lg border bg-card p-2.5">
+          {order.map((layer) => {
+            const rows = grouped[layer];
+            if (!rows?.length) return null;
+            const Icon = layerIcon(layer);
+            return (
+              <div key={layer}>
+                <div className="mb-1 flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      'flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                      layerTone(layer),
+                    )}
+                  >
+                    <Icon className="size-2.5" />
+                    {LAYER_LABEL[layer]}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {rows.map(({ item, idx }) => (
+                    <button
+                      key={idx}
+                      disabled={applied}
+                      onClick={() => togglePlanItem(msg.id, idx)}
+                      className={cn(
+                        'flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left transition-colors',
+                        !applied && 'hover:bg-muted/60',
+                        !item.enabled && 'opacity-40',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'mt-0.5 flex size-3.5 shrink-0 items-center justify-center rounded border',
+                          item.enabled
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : 'border-muted-foreground/40',
+                        )}
+                      >
+                        {item.enabled && <Check className="size-2.5" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate text-xs font-medium">
+                            {item.label}
+                          </span>
+                          <span className="shrink-0 text-[9px] text-muted-foreground">
+                            {actionLabel(item.action)}
+                          </span>
+                        </span>
+                        {item.detail && (
+                          <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                            {item.detail}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+
+          {plan.items.length === 0 && (
+            <p className="py-2 text-center text-xs text-muted-foreground">
+              추출된 항목이 없습니다
+            </p>
+          )}
+        </div>
+
+        {/* 액션 */}
+        {!applied && plan.items.length > 0 && (
+          <div className="mt-2.5 flex items-center gap-2">
+            <Button
+              size="sm"
+              className="h-7 gap-1 bg-primary text-xs text-primary-foreground hover:bg-primary/90"
+              onClick={() => handleApplyPlan(msg.id)}
+              disabled={enabledCount === 0}
+            >
+              <Check className="size-3" />
+              저장 ({enabledCount})
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 text-xs text-muted-foreground"
+              onClick={() => handleDiscardPlan(msg.id)}
+            >
+              <XCircle className="size-3" />
+              취소
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderProjectMatchCard = (msg: ChatMessage) => {
     const d = msg.projectMatchData;
@@ -899,196 +1178,161 @@ export function ChatPanel() {
   /*  JSX                                                              */
   /* ================================================================ */
 
+  const hasMessages = messages.length > 0;
+
   return (
-    <>
-      {/* ============ Floating Action Button ============ */}
+    <div className="flex flex-col">
+      {/* ============ Expandable Messages Area ============ */}
       <AnimatePresence>
-        {!open && (
-          <motion.button
-            initial={{ scale: 0, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-            onClick={() => setOpen(true)}
-            className="fixed bottom-20 right-4 z-50 flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-lg shadow-teal-500/25 lg:bottom-6"
-            aria-label={t.chat.title}
-          >
-            <MessageCircle className="size-5" />
-            {draftCount > 0 && (
-              <span className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
-                {draftCount}
-              </span>
-            )}
-          </motion.button>
-        )}
-      </AnimatePresence>
-
-      {/* ============ Chat Panel ============ */}
-      <AnimatePresence>
-        {open && (
+        {open && hasMessages && (
           <motion.div
-            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-[420px] lg:inset-auto lg:right-4 lg:bottom-6 lg:top-auto"
+            className="overflow-hidden border-t bg-card"
           >
-            <div className="flex h-[70vh] max-h-[560px] flex-col rounded-t-2xl border bg-card shadow-2xl lg:h-[480px] lg:rounded-2xl">
-              {/* ---- Header ---- */}
-              <div className="flex items-center justify-between border-b px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <div className="flex size-7 items-center justify-center rounded-lg bg-gradient-to-br from-teal-500 to-emerald-600">
-                    <MessageCircle className="size-3.5 text-white" />
-                  </div>
-                  <span className="text-sm font-semibold">{t.chat.title}</span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  onClick={() => setOpen(false)}
-                >
-                  <X className="size-4" />
-                </Button>
+            <div className="flex items-center justify-between border-b px-4 py-2">
+              <div className="flex items-center gap-2">
+                <MessageCircle className="size-3.5 text-primary" />
+                <span className="text-xs font-semibold">{t.chat.title}</span>
               </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => setOpen(false)}
+              >
+                <X className="size-3.5" />
+              </Button>
+            </div>
 
-              {/* ---- Messages ---- */}
-              <ScrollArea className="flex-1 px-4 py-3">
-                <div className="space-y-3">
-                  {messages.map((msg) => {
-                    /* Thinking indicator */
-                    if (msg.isThinking) {
-                      return (
-                        <div key={msg.id} className="flex gap-2">
-                          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
-                            <Loader2 className="size-3 animate-spin text-muted-foreground" />
-                          </div>
-                          <p className="text-xs italic text-muted-foreground">
-                            {msg.content}
-                          </p>
-                        </div>
-                      );
-                    }
-
-                    /* User bubble */
-                    if (msg.role === 'user') {
-                      return (
-                        <div key={msg.id} className="flex justify-end">
-                          <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
-                            {msg.content}
-                          </div>
-                        </div>
-                      );
-                    }
-
-                    /* Draft card */
-                    if (msg.role === 'draft' && msg.draftNodeId) {
-                      return renderDraftCard(msg);
-                    }
-
-                    /* Project match suggestion */
-                    if (msg.role === 'project_match') {
-                      return renderProjectMatchCard(msg);
-                    }
-
-                    /* AI text message */
+            <ScrollArea className="max-h-[40vh] px-4 py-3">
+              <div className="space-y-3">
+                {messages.map((msg) => {
+                  if (msg.isThinking) {
                     return (
                       <div key={msg.id} className="flex gap-2">
                         <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
-                          <MessageCircle className="size-3 text-muted-foreground" />
+                          <Loader2 className="size-3 animate-spin text-muted-foreground" />
                         </div>
-                        <p className="max-w-[85%] text-sm leading-relaxed text-foreground">
+                        <p className="text-xs italic text-muted-foreground">
                           {msg.content}
                         </p>
                       </div>
                     );
-                  })}
-                  <div ref={messagesEndRef} />
-                </div>
-              </ScrollArea>
-
-              {/* ---- Attached file chip ---- */}
-              {attachedFile && (
-                <div className="flex items-center gap-1.5 border-t px-4 py-2">
-                  <span className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                    <Paperclip className="size-3" />
-                    {t.chat.fileAttached}
-                    <button
-                      onClick={() => setAttachedFile(null)}
-                      className="ml-0.5 text-muted-foreground hover:text-foreground"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </span>
-                </div>
-              )}
-
-              {/* ---- Input area ---- */}
-              <div className="border-t px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-                <div className="flex items-center gap-2">
-                  {/* hidden file input */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".txt,.md,.json,.csv"
-                    onChange={handleFileSelect}
-                    className="hidden"
-                  />
-
-                  {/* Paperclip */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 shrink-0 text-muted-foreground"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Paperclip className="size-4" />
-                  </Button>
-
-                  {/* Voice input — Phase 4 */}
-                  <VoiceButton onTranscript={handleVoiceTranscript} />
-
-                  {/* Text input */}
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey && !isProcessing) {
-                        e.preventDefault();
-                        handleSend();
-                      }
-                    }}
-                    placeholder={
-                      clarificationState.awaiting
-                        ? getFieldLabel(clarificationState.awaiting.fieldName)
-                        : t.chat.placeholder
-                    }
-                    className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
-                    disabled={isProcessing}
-                  />
-
-                  {/* Send */}
-                  <Button
-                    size="icon"
-                    className="size-8 shrink-0 bg-primary text-primary-foreground hover:bg-primary/90"
-                    onClick={handleSend}
-                    disabled={isProcessing || (!input.trim() && !attachedFile)}
-                    data-send-btn="true"
-                  >
-                    {isProcessing ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <Send className="size-3.5" />
-                    )}
-                  </Button>
-                </div>
+                  }
+                  if (msg.role === 'user') {
+                    return (
+                      <div key={msg.id} className="flex justify-end">
+                        <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
+                          {msg.content}
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (msg.role === 'plan' && msg.plan) {
+                    return renderPlanCard(msg);
+                  }
+                  if (msg.role === 'draft' && msg.draftNodeId) {
+                    return renderDraftCard(msg);
+                  }
+                  if (msg.role === 'project_match') {
+                    return renderProjectMatchCard(msg);
+                  }
+                  return (
+                    <div key={msg.id} className="flex gap-2">
+                      <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
+                        <MessageCircle className="size-3 text-muted-foreground" />
+                      </div>
+                      <p className="max-w-[85%] text-sm leading-relaxed text-foreground">
+                        {msg.content}
+                      </p>
+                    </div>
+                  );
+                })}
+                <div ref={messagesEndRef} />
               </div>
-            </div>
+            </ScrollArea>
           </motion.div>
         )}
       </AnimatePresence>
-    </>
+
+      {/* ============ Always-visible Input Bar ============ */}
+      {attachedFile && (
+        <div className="flex items-center gap-1.5 border-t bg-card px-4 py-2">
+          <span className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            <Paperclip className="size-3" />
+            {t.chat.fileAttached}
+            <button
+              onClick={() => setAttachedFile(null)}
+              className="ml-0.5 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        </div>
+      )}
+
+      <div className="border-t bg-card px-3 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.json,.csv"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0 text-muted-foreground"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Paperclip className="size-4" />
+          </Button>
+
+          <VoiceButton onTranscript={handleVoiceTranscript} />
+
+          <div className="flex flex-1 items-center gap-1 rounded-full border bg-background px-3 py-1.5">
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !isProcessing) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              onFocus={() => setOpen(true)}
+              placeholder={
+                clarificationState.awaiting
+                  ? getFieldLabel(clarificationState.awaiting.fieldName)
+                  : t.chat.placeholder
+              }
+              className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+              disabled={isProcessing}
+            />
+          </div>
+
+          <Button
+            size="icon"
+            className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
+            onClick={handleSend}
+            disabled={isProcessing || (!input.trim() && !attachedFile)}
+            data-send-btn="true"
+          >
+            {isProcessing ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Send className="size-3.5" />
+            )}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -29,14 +29,15 @@ function AppContent() {
 
   return (
     <>
+      {/* Desktop */}
       <div className="hidden lg:block">
         <PcDashboard />
       </div>
+      {/* Mobile: shell includes swipeable views, chat bar is between content and nav */}
       <div className="lg:hidden">
         <MobileShell />
       </div>
       <Toaster />
-      <ChatPanel />
     </>
   );
 }

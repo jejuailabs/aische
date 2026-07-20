@@ -12,7 +12,6 @@ import {
 } from '@/lib/store';
 import { useLocale } from '@/hooks/use-locale';
 import { createNode, formatTime, isSameDay } from '@/lib/services';
-import { parseUserInput, createDraftNode } from '@/lib/ai-parser';
 import { endOfDay, startOfDay } from 'date-fns';
 import { motion } from 'framer-motion';
 import {
@@ -109,8 +108,6 @@ export function DashboardView() {
   }, [allNodes]);
 
   const [quickTodo, setQuickTodo] = useState('');
-  const [aiInput, setAiInput] = useState('');
-  const [aiProcessing, setAiProcessing] = useState(false);
 
   const handleQuickAdd = useCallback(() => {
     const title = quickTodo.trim();
@@ -135,75 +132,10 @@ export function DashboardView() {
     setQuickTodo('');
   }, [quickTodo, addNode, today]);
 
-  const handleAiSend = useCallback(async () => {
-    const text = aiInput.trim();
-    if (!text) return;
-    setAiProcessing(true);
-    await new Promise((r) => setTimeout(r, 1000));
-    const result = parseUserInput(text, language);
-    const draft = createDraftNode(result, 'demo-workspace');
-    addNode(draft);
-    setAiInput('');
-    setAiProcessing(false);
-    toast.success(t.chat.draftCreated);
-  }, [aiInput, language, addNode, t.chat.draftCreated]);
-
   const isDark = document.documentElement.classList.contains('dark');
 
   return (
     <div className="flex flex-col gap-4">
-      {/* AI Assistant Widget */}
-      <motion.div
-        custom={-1}
-        variants={cardVariants}
-        initial="hidden"
-        animate="visible"
-        className="md:col-span-2 xl:col-span-3"
-      >
-        <Card className="overflow-hidden">
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <div className="flex size-7 items-center justify-center rounded-lg bg-gradient-to-br from-teal-500 to-emerald-600">
-                <MessageCircle className="size-3.5 text-white" />
-              </div>
-              <CardTitle className="text-sm font-semibold">{t.chat.title}</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              {t.chat.welcomeMessage}
-            </p>
-            <div className="flex gap-2">
-              <Input
-                value={aiInput}
-                onChange={(e) => setAiInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleAiSend();
-                }}
-                placeholder={t.chat.placeholder}
-                className="h-8 text-xs"
-                disabled={aiProcessing}
-              />
-              <Button
-                size="sm"
-                className="h-8 bg-primary text-primary-foreground hover:bg-primary/90"
-                onClick={handleAiSend}
-                disabled={aiProcessing || !aiInput.trim()}
-              >
-                {aiProcessing ? (
-                  <span className="flex items-center gap-1">
-                    <Inbox className="size-3 animate-spin" />
-                    {t.chat.thinking}
-                  </span>
-                ) : (
-                  <Send className="size-3.5" />
-                )}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
-
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {/* Today's Schedule */}
         <motion.div

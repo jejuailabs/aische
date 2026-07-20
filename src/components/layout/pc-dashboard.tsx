@@ -18,6 +18,8 @@ import {
   FileText,
   Shield,
   ScrollText,
+  Users,
+  Database,
 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -34,15 +36,18 @@ import { SettingsView } from '@/components/settings/settings-view';
 import { DraftInbox } from '@/components/chat/draft-inbox';
 import { AdminView } from '@/components/admin/admin-view';
 import { ActivityLogView } from '@/components/log/activity-log-view';
+import { PeopleView } from '@/components/people/people-view';
+import { DataView } from '@/components/data/data-view';
+import { ChatPanel } from '@/components/chat/chat-panel';
 import { usePrefStore } from '@/lib/store';
 
-const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'drafts' | 'settings' | 'admin' | 'log' }[] = [
-  { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
+const navItems: { view: AppView; icon: typeof CalendarDays; labelKey: 'calendar' | 'todo' | 'mandarat' | 'dashboard' | 'drafts' | 'settings' | 'people' }[] = [
   { view: 'calendar', icon: CalendarDays, labelKey: 'calendar' },
   { view: 'todo', icon: CheckSquare, labelKey: 'todo' },
   { view: 'mandarat', icon: LayoutGrid, labelKey: 'mandarat' },
+  { view: 'dashboard', icon: LayoutDashboard, labelKey: 'dashboard' },
+  { view: 'people', icon: Users, labelKey: 'people' },
   { view: 'drafts', icon: FileText, labelKey: 'drafts' },
-  { view: 'log', icon: ScrollText, labelKey: 'log' },
 ];
 
 function ViewSwitcher({ view }: { view: AppView }) {
@@ -61,10 +66,14 @@ function ViewSwitcher({ view }: { view: AppView }) {
       return <AdminView />;
     case 'log':
       return <ActivityLogView />;
+    case 'people':
+      return <PeopleView />;
+    case 'data':
+      return <DataView />;
     case 'settings':
       return <SettingsView />;
     default:
-      return <DashboardView />;
+      return <CalendarView />;
   }
 }
 
@@ -87,6 +96,8 @@ export function PcDashboard() {
     settings: t.nav.settings,
     admin: t.admin.title,
     log: t.log.title,
+    people: t.people.title,
+    data: t.data.title,
   };
 
   const headerAction =
@@ -153,6 +164,18 @@ export function PcDashboard() {
             {t.log.title}
           </button>
           <button
+            onClick={() => setView('data')}
+            className={cn(
+              'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              activeView === 'data'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <Database className="size-4" />
+            {t.nav.data}
+          </button>
+          <button
             onClick={() => setView('admin')}
             className={cn(
               'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
@@ -204,6 +227,8 @@ export function PcDashboard() {
         <div className="flex-1 overflow-y-auto p-4 lg:p-6">
           <ViewSwitcher view={activeView} />
         </div>
+        {/* AI Chat input bar */}
+        <ChatPanel />
       </main>
 
       {/* Right Sidebar */}

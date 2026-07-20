@@ -13,6 +13,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { NodeDetailSheet } from '@/components/shared/node-detail-sheet';
 import { toast } from 'sonner';
 import {
   startOfMonth,
@@ -66,6 +67,7 @@ export function CalendarView() {
   const { t } = useLocale();
   const [monthOffset, setMonthOffset] = useState(0);
   const [filterCats, setFilterCats] = useState<Set<string>>(new Set());
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
 
   const dateLocale = language === 'ko' ? koLocale : undefined;
   const currentMonth = addMonths(new Date(), monthOffset);
@@ -246,8 +248,21 @@ export function CalendarView() {
                     <div
                       key={evt.id}
                       title={evt.title}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        // 날짜 셀의 "일간 뷰로 이동"이 같이 발동하지 않도록 막는다.
+                        e.stopPropagation();
+                        setDetailNodeId(evt.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.stopPropagation();
+                        e.preventDefault();
+                        setDetailNodeId(evt.id);
+                      }}
                       className={cn(
-                        'absolute overflow-hidden rounded-sm px-1 text-[10px] leading-[14px] text-white',
+                        'absolute cursor-pointer overflow-hidden rounded-sm px-1 text-[10px] leading-[14px] text-white',
                         evt.status === 'completed' && 'opacity-50 line-through'
                       )}
                       style={{
@@ -267,6 +282,12 @@ export function CalendarView() {
           })}
         </div>
       </div>
+
+      <NodeDetailSheet
+        nodeId={detailNodeId}
+        open={detailNodeId !== null}
+        onOpenChange={(o) => !o && setDetailNodeId(null)}
+      />
     </div>
   );
 }
@@ -279,6 +300,7 @@ function DailyView() {
   const getColor = useCategoryStore((s) => s.getColor);
   const language = usePrefStore((s) => s.language);
   const { t } = useLocale();
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
 
   const dateLocale = language === 'ko' ? koLocale : undefined;
   const dateStr = format(selectedDate, 'M월 d일 EEEE', { locale: dateLocale });
@@ -352,8 +374,16 @@ function DailyView() {
               return (
                 <div
                   key={evt.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setDetailNodeId(evt.id)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    setDetailNodeId(evt.id);
+                  }}
                   className={cn(
-                    'pointer-events-auto absolute left-1 right-1 overflow-hidden rounded-md border-l-4 bg-card px-2 py-1.5 shadow-sm transition-opacity',
+                    'pointer-events-auto absolute left-1 right-1 cursor-pointer overflow-hidden rounded-md border-l-4 bg-card px-2 py-1.5 shadow-sm transition-opacity hover:brightness-95',
                     isCompleted && 'opacity-50'
                   )}
                   style={{
@@ -380,6 +410,12 @@ function DailyView() {
           </div>
         </div>
       </div>
+
+      <NodeDetailSheet
+        nodeId={detailNodeId}
+        open={detailNodeId !== null}
+        onOpenChange={(o) => !o && setDetailNodeId(null)}
+      />
     </div>
   );
 }

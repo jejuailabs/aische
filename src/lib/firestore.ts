@@ -37,6 +37,9 @@ import type {
   UserProfile,
   ScheduleInfo,
   Reminder,
+  Person,
+  Organization,
+  CapturedInput,
 } from "./types";
 
 // ─── helpers ────────────────────────────────────────
@@ -116,6 +119,17 @@ function firestoreToNode(data: DocumentData): Node {
     schedule,
     dependency: data.dependency ?? { blockedBy: [], blocks: [] },
     aiMeta: data.aiMeta ?? null,
+    // 실행 단위 (구 데이터 호환: 없으면 type으로 추론)
+    kind: data.kind ?? (data.type === "goal" ? "project" : "task"),
+    completion:
+      data.completion ??
+      ((data.kind ?? (data.type === "goal" ? "project" : "task")) === "task"
+        ? { mode: "manual" }
+        : null),
+    autoCompleteFromChildren: data.autoCompleteFromChildren ?? true,
+    personIds: data.personIds ?? [],
+    orgIds: data.orgIds ?? [],
+    capturedInputId: data.capturedInputId ?? null,
   };
 }
 
@@ -367,4 +381,190 @@ export async function saveAllLogs(
     batch.set(logDoc(uid, log.id), logToFirestore(log));
   }
   await batch.commit();
+}
+
+// ═══════════════════════════════════════════════════════
+// API: People (인물 / 명함 레이어)
+// ═══════════════════════════════════════════════════════
+
+const peopleCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "people");
+const personDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "people", id);
+
+function personToFirestore(p: Person): DocumentData {
+  return {
+    ...p,
+    createdAt: dateToTs(p.createdAt),
+    updatedAt: dateToTs(p.updatedAt),
+  };
+}
+
+function firestoreToPerson(data: DocumentData): Person {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    name: data.name ?? "",
+    org: data.org ?? null,
+    orgId: data.orgId ?? null,
+    role: data.role ?? null,
+    phone: data.phone ?? null,
+    email: data.email ?? null,
+    note: data.note ?? "",
+    tags: data.tags ?? [],
+    relatedNodeIds: data.relatedNodeIds ?? [],
+    sourceInputIds: data.sourceInputIds ?? [],
+    createdAt: toDate(data.createdAt),
+    updatedAt: toDate(data.updatedAt),
+  };
+}
+
+export async function fetchAllPeople(uid: string): Promise<Person[]> {
+  const snap = await getDocs(peopleCol(uid));
+  return snap.docs.map((d) => firestoreToPerson({ id: d.id, ...d.data() }));
+}
+
+export async function savePerson(uid: string, p: Person): Promise<void> {
+  await setDoc(personDoc(uid, p.id), personToFirestore(p));
+}
+
+export async function updatePersonFields(
+  uid: string,
+  id: string,
+  updates: Partial<Person>
+): Promise<void> {
+  await updateDoc(personDoc(uid, id), {
+    ...updates,
+    updatedAt: dateToTs(new Date()),
+  } as DocumentData);
+}
+
+export async function deletePerson(uid: string, id: string): Promise<void> {
+  await deleteDoc(personDoc(uid, id));
+}
+
+// ═══════════════════════════════════════════════════════
+// API: Organizations (조직 / 단체 레이어)
+// ═══════════════════════════════════════════════════════
+
+const orgsCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "organizations");
+const orgDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "organizations", id);
+
+function orgToFirestore(o: Organization): DocumentData {
+  return {
+    ...o,
+    createdAt: dateToTs(o.createdAt),
+    updatedAt: dateToTs(o.updatedAt),
+  };
+}
+
+function firestoreToOrg(data: DocumentData): Organization {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    name: data.name ?? "",
+    orgType: data.orgType ?? null,
+    note: data.note ?? "",
+    memberIds: data.memberIds ?? [],
+    relatedNodeIds: data.relatedNodeIds ?? [],
+    sourceInputIds: data.sourceInputIds ?? [],
+    createdAt: toDate(data.createdAt),
+    updatedAt: toDate(data.updatedAt),
+  };
+}
+
+export async function fetchAllOrganizations(
+  uid: string
+): Promise<Organization[]> {
+  const snap = await getDocs(orgsCol(uid));
+  return snap.docs.map((d) => firestoreToOrg({ id: d.id, ...d.data() }));
+}
+
+export async function saveOrganization(
+  uid: string,
+  o: Organization
+): Promise<void> {
+  await setDoc(orgDoc(uid, o.id), orgToFirestore(o));
+}
+
+export async function updateOrganizationFields(
+  uid: string,
+  id: string,
+  updates: Partial<Organization>
+): Promise<void> {
+  await updateDoc(orgDoc(uid, id), {
+    ...updates,
+    updatedAt: dateToTs(new Date()),
+  } as DocumentData);
+}
+
+export async function deleteOrganization(
+  uid: string,
+  id: string
+): Promise<void> {
+  await deleteDoc(orgDoc(uid, id));
+}
+
+// ═══════════════════════════════════════════════════════
+// API: CapturedInputs (원본 입력 축적 — 향후 재분석 소스)
+// ═══════════════════════════════════════════════════════
+
+const capturesCol = (uid: string) =>
+  collection(getClientDb(), "users", uid, "capturedInputs");
+const captureDoc = (uid: string, id: string) =>
+  doc(getClientDb(), "users", uid, "capturedInputs", id);
+
+function captureToFirestore(c: CapturedInput): DocumentData {
+  return {
+    ...c,
+    // extraction은 중첩 객체이므로 그대로 저장 (Date 없음, ISO 문자열만 포함)
+    createdAt: dateToTs(c.createdAt),
+  };
+}
+
+function firestoreToCapture(data: DocumentData): CapturedInput {
+  return {
+    id: data.id,
+    workspaceId: data.workspaceId ?? "",
+    rawText: data.rawText ?? "",
+    channel: data.channel ?? "text",
+    extraction: data.extraction ?? null,
+    appliedNodeIds: data.appliedNodeIds ?? [],
+    appliedPersonIds: data.appliedPersonIds ?? [],
+    appliedOrgIds: data.appliedOrgIds ?? [],
+    createdAt: toDate(data.createdAt),
+  };
+}
+
+export async function fetchRecentCaptures(
+  uid: string,
+  count = 200
+): Promise<CapturedInput[]> {
+  const q = query(capturesCol(uid), orderBy("createdAt", "desc"), fsLimit(count));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => firestoreToCapture({ id: d.id, ...d.data() }));
+}
+
+export async function saveCapturedInput(
+  uid: string,
+  c: CapturedInput
+): Promise<void> {
+  await setDoc(captureDoc(uid, c.id), captureToFirestore(c));
+}
+
+export async function updateCapturedInputFields(
+  uid: string,
+  id: string,
+  updates: Partial<CapturedInput>
+): Promise<void> {
+  await updateDoc(captureDoc(uid, id), updates as DocumentData);
+}
+
+export async function deleteCapturedInput(
+  uid: string,
+  id: string
+): Promise<void> {
+  await deleteDoc(captureDoc(uid, id));
 }
