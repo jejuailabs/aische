@@ -227,8 +227,6 @@ export function PcDashboard() {
         <div className="flex-1 overflow-y-auto p-4 lg:p-6">
           <ViewSwitcher view={activeView} />
         </div>
-        {/* AI Chat input bar */}
-        <ChatPanel />
       </main>
 
       {/* Right Sidebar */}
@@ -275,6 +273,9 @@ export function PcDashboard() {
           </button>
         </div>
       </aside>
+
+      {/* AI 채팅 — 드래그·리사이즈 되는 독립 창 (레이아웃 공간 차지 안 함) */}
+      <ChatPanel variant="floating" />
     </div>
   );
 }

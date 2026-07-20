@@ -46,7 +46,14 @@ import {
   Sparkles,
   Building2,
   FileText,
+  Minus,
+  RotateCcw,
+  GripHorizontal,
 } from 'lucide-react';
+import {
+  useFloatingWindow,
+  RESIZE_HANDLES,
+} from '@/hooks/use-floating-window';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -106,8 +113,32 @@ interface EditValues {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ChatPanel() {
+interface ChatPanelProps {
+  /**
+   * floating — 데스크톱: 드래그·리사이즈 되는 독립 창
+   * docked   — 모바일: 화면 하단에 고정된 입력 바
+   */
+  variant?: 'floating' | 'docked';
+}
+
+export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   const { t, locale } = useLocale();
+  const isFloating = variant === 'floating';
+
+  /* ---- 플로팅 창 위치·크기 ---- */
+  const { rect, interacting, dragProps, resizeProps, reset } =
+    useFloatingWindow({
+      storageKey: 'goalflow.chat.window',
+      defaultRect: (vp) => ({
+        w: 420,
+        h: Math.min(560, vp.h - 120),
+        x: vp.w - 420 - 24,
+        y: vp.h - Math.min(560, vp.h - 120) - 24,
+      }),
+      minW: 320,
+      minH: 240,
+    });
+  const [minimized, setMinimized] = useState(false);
 
   /* ---- local state ---- */
   const [open, setOpen] = useState(false);
@@ -1180,9 +1211,268 @@ export function ChatPanel() {
 
   const hasMessages = messages.length > 0;
 
+  /* ---------------------------------------------------------------- */
+  /*  공용 조각 — 두 변형이 같이 씀                                     */
+  /* ---------------------------------------------------------------- */
+
+  const messageList = (
+    <div className="space-y-3">
+      {messages.map((msg) => {
+        if (msg.isThinking) {
+          return (
+            <div key={msg.id} className="flex gap-2">
+              <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
+                <Loader2 className="size-3 animate-spin text-muted-foreground" />
+              </div>
+              <p className="text-xs italic text-muted-foreground">
+                {msg.content}
+              </p>
+            </div>
+          );
+        }
+        if (msg.role === 'user') {
+          return (
+            <div key={msg.id} className="flex justify-end">
+              <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
+                {msg.content}
+              </div>
+            </div>
+          );
+        }
+        if (msg.role === 'plan' && msg.plan) return renderPlanCard(msg);
+        if (msg.role === 'draft' && msg.draftNodeId) return renderDraftCard(msg);
+        if (msg.role === 'project_match') return renderProjectMatchCard(msg);
+        return (
+          <div key={msg.id} className="flex gap-2">
+            <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
+              <MessageCircle className="size-3 text-muted-foreground" />
+            </div>
+            <p className="max-w-[85%] text-sm leading-relaxed text-foreground">
+              {msg.content}
+            </p>
+          </div>
+        );
+      })}
+      <div ref={messagesEndRef} />
+    </div>
+  );
+
+  const attachedChip = attachedFile ? (
+    <div className="flex items-center gap-1.5 border-t bg-card px-4 py-2">
+      <span className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+        <Paperclip className="size-3" />
+        {t.chat.fileAttached}
+        <button
+          onClick={() => setAttachedFile(null)}
+          className="ml-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <X className="size-3" />
+        </button>
+      </span>
+    </div>
+  ) : null;
+
+  const inputBar = (
+    <div
+      className={cn(
+        'border-t bg-card px-3 py-2.5',
+        !isFloating && 'pb-[max(0.625rem,env(safe-area-inset-bottom))]',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.md,.json,.csv"
+          onChange={handleFileSelect}
+          className="hidden"
+        />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0 text-muted-foreground"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Paperclip className="size-4" />
+        </Button>
+
+        <VoiceButton onTranscript={handleVoiceTranscript} />
+
+        <div className="flex flex-1 items-center gap-1 rounded-full border bg-background px-3 py-1.5">
+          <input
+            ref={inputRef}
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !isProcessing) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            onFocus={() => !isFloating && setOpen(true)}
+            placeholder={
+              clarificationState.awaiting
+                ? getFieldLabel(clarificationState.awaiting.fieldName)
+                : t.chat.placeholder
+            }
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+            disabled={isProcessing}
+          />
+        </div>
+
+        <Button
+          size="icon"
+          className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
+          onClick={handleSend}
+          disabled={isProcessing || (!input.trim() && !attachedFile)}
+          data-send-btn="true"
+        >
+          {isProcessing ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Send className="size-3.5" />
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+
+  /* ================================================================ */
+  /*  변형 1: 플로팅 창 (데스크톱)                                      */
+  /* ================================================================ */
+
+  if (isFloating) {
+    return (
+      <>
+        {/* 닫혀 있을 때: 열기 버튼 */}
+        <AnimatePresence>
+          {!open && (
+            <motion.button
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+              onClick={() => setOpen(true)}
+              className="fixed bottom-6 right-6 z-50 flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-lg shadow-teal-500/25"
+              aria-label={t.chat.title}
+            >
+              <MessageCircle className="size-5" />
+              {draftCount > 0 && (
+                <span className="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                  {draftCount}
+                </span>
+              )}
+            </motion.button>
+          )}
+        </AnimatePresence>
+
+        {/* 열려 있을 때: 드래그·리사이즈 창 */}
+        {open && rect && (
+          <div
+            className={cn(
+              'fixed z-50 flex flex-col overflow-hidden rounded-xl border bg-card shadow-2xl',
+              // 드래그 중에는 그림자를 키워 떠 있는 느낌
+              interacting && 'shadow-[0_20px_60px_-10px_rgba(0,0,0,0.4)]',
+            )}
+            style={{
+              left: rect.x,
+              top: rect.y,
+              width: rect.w,
+              height: minimized ? undefined : rect.h,
+            }}
+          >
+            {/* ---- 타이틀 바 (드래그 핸들) ---- */}
+            <div
+              {...dragProps}
+              onDoubleClick={() => setMinimized((m) => !m)}
+              className={cn(
+                'flex shrink-0 items-center gap-2 border-b bg-muted/40 px-3 py-2 select-none',
+                interacting ? 'cursor-grabbing' : 'cursor-grab',
+              )}
+            >
+              <GripHorizontal className="size-3.5 shrink-0 text-muted-foreground/60" />
+              <MessageCircle className="size-3.5 shrink-0 text-primary" />
+              <span className="flex-1 truncate text-xs font-semibold">
+                {t.chat.title}
+              </span>
+              {draftCount > 0 && (
+                <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                  {draftCount}
+                </Badge>
+              )}
+              {/* 창 조작 버튼 — 드래그 시작 방지 위해 pointerDown 전파 차단 */}
+              <div
+                className="flex items-center gap-0.5"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  title="기본 위치로"
+                  onClick={reset}
+                >
+                  <RotateCcw className="size-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  title={minimized ? '펼치기' : '접기'}
+                  onClick={() => setMinimized((m) => !m)}
+                >
+                  <Minus className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  title="닫기"
+                  onClick={() => setOpen(false)}
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+
+            {!minimized && (
+              <>
+                <ScrollArea className="min-h-0 flex-1 px-4 py-3">
+                  {hasMessages ? (
+                    messageList
+                  ) : (
+                    <p className="py-8 text-center text-xs text-muted-foreground">
+                      {t.chat.welcomeMessage}
+                    </p>
+                  )}
+                </ScrollArea>
+                {attachedChip}
+                {inputBar}
+              </>
+            )}
+
+            {/* ---- 8방향 리사이즈 손잡이 ---- */}
+            {!minimized &&
+              RESIZE_HANDLES.map(({ dir, className }) => (
+                <div
+                  key={dir}
+                  {...resizeProps(dir)}
+                  className={cn('absolute z-10', className)}
+                />
+              ))}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  /* ================================================================ */
+  /*  변형 2: 하단 고정 바 (모바일)                                     */
+  /* ================================================================ */
+
   return (
     <div className="flex flex-col">
-      {/* ============ Expandable Messages Area ============ */}
       <AnimatePresence>
         {open && hasMessages && (
           <motion.div
@@ -1206,133 +1496,15 @@ export function ChatPanel() {
                 <X className="size-3.5" />
               </Button>
             </div>
-
             <ScrollArea className="max-h-[40vh] px-4 py-3">
-              <div className="space-y-3">
-                {messages.map((msg) => {
-                  if (msg.isThinking) {
-                    return (
-                      <div key={msg.id} className="flex gap-2">
-                        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
-                          <Loader2 className="size-3 animate-spin text-muted-foreground" />
-                        </div>
-                        <p className="text-xs italic text-muted-foreground">
-                          {msg.content}
-                        </p>
-                      </div>
-                    );
-                  }
-                  if (msg.role === 'user') {
-                    return (
-                      <div key={msg.id} className="flex justify-end">
-                        <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
-                          {msg.content}
-                        </div>
-                      </div>
-                    );
-                  }
-                  if (msg.role === 'plan' && msg.plan) {
-                    return renderPlanCard(msg);
-                  }
-                  if (msg.role === 'draft' && msg.draftNodeId) {
-                    return renderDraftCard(msg);
-                  }
-                  if (msg.role === 'project_match') {
-                    return renderProjectMatchCard(msg);
-                  }
-                  return (
-                    <div key={msg.id} className="flex gap-2">
-                      <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
-                        <MessageCircle className="size-3 text-muted-foreground" />
-                      </div>
-                      <p className="max-w-[85%] text-sm leading-relaxed text-foreground">
-                        {msg.content}
-                      </p>
-                    </div>
-                  );
-                })}
-                <div ref={messagesEndRef} />
-              </div>
+              {messageList}
             </ScrollArea>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ============ Always-visible Input Bar ============ */}
-      {attachedFile && (
-        <div className="flex items-center gap-1.5 border-t bg-card px-4 py-2">
-          <span className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            <Paperclip className="size-3" />
-            {t.chat.fileAttached}
-            <button
-              onClick={() => setAttachedFile(null)}
-              className="ml-0.5 text-muted-foreground hover:text-foreground"
-            >
-              <X className="size-3" />
-            </button>
-          </span>
-        </div>
-      )}
-
-      <div className="border-t bg-card px-3 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
-        <div className="flex items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".txt,.md,.json,.csv"
-            onChange={handleFileSelect}
-            className="hidden"
-          />
-
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 shrink-0 text-muted-foreground"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Paperclip className="size-4" />
-          </Button>
-
-          <VoiceButton onTranscript={handleVoiceTranscript} />
-
-          <div className="flex flex-1 items-center gap-1 rounded-full border bg-background px-3 py-1.5">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey && !isProcessing) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              onFocus={() => setOpen(true)}
-              placeholder={
-                clarificationState.awaiting
-                  ? getFieldLabel(clarificationState.awaiting.fieldName)
-                  : t.chat.placeholder
-              }
-              className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
-              disabled={isProcessing}
-            />
-          </div>
-
-          <Button
-            size="icon"
-            className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
-            onClick={handleSend}
-            disabled={isProcessing || (!input.trim() && !attachedFile)}
-            data-send-btn="true"
-          >
-            {isProcessing ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Send className="size-3.5" />
-            )}
-          </Button>
-        </div>
-      </div>
+      {attachedChip}
+      {inputBar}
     </div>
   );
 }
