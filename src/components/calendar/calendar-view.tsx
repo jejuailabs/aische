@@ -193,6 +193,14 @@ export function CalendarView() {
   const [range, setRange] = useState({ from: -1, to: 2 });
   /** 위로 달을 덧붙였을 때 스크롤 위치를 보정하려고 직전 높이를 기억한다 */
   const prependRef = useRef<number | null>(null);
+  /**
+   * 첫 진입에서 이번 달로 자리를 잡았는지.
+   *
+   * 이게 없으면 마운트 직후 scrollTop이 0이라 "위를 더 채워라"가 바로 발동하고,
+   * 채우면 또 위가 되고… 과거로 계속 걸어간다. 실제로 열자마자 25년 12월이
+   * 떠 있었다. 자리를 잡기 전까지는 스크롤 핸들러를 아예 돌리지 않는다.
+   */
+  const readyRef = useRef(false);
 
   const monthOffsets = useMemo(() => {
     const out: number[] = [];
@@ -216,6 +224,9 @@ export function CalendarView() {
   const handleMonthScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // 이번 달로 자리를 잡기 전에는 아무것도 하지 않는다.
+    // 안 그러면 마운트 직후 scrollTop=0 때문에 과거로 무한히 채워 나간다.
+    if (!readyRef.current) return;
 
     // 컨테이너 상단에 가장 가까운 달을 '보고 있는 달'로 친다.
     const top = el.getBoundingClientRect().top;
@@ -231,7 +242,11 @@ export function CalendarView() {
     if (best !== null && best !== monthOffset) setMonthOffset(best);
 
     // 끝에 가까워지면 미리 더 만들어 둔다.
-    if (el.scrollTop < 300) {
+    //
+    // prependRef가 아직 살아 있으면 직전 요청의 보정이 안 끝난 것이다.
+    // 그 상태에서 또 요청하면 보정 전 scrollTop(=작은 값)을 보고 계속
+    // 과거로 걸어간다.
+    if (el.scrollTop < 300 && prependRef.current === null) {
       prependRef.current = el.scrollHeight;
       setRange((r) => ({ ...r, from: r.from - 2 }));
     } else if (el.scrollHeight - el.clientHeight - el.scrollTop < 600) {
@@ -247,6 +262,23 @@ export function CalendarView() {
     prependRef.current = null;
     if (added > 0) el.scrollTop += added;
   }, [range]);
+
+  /**
+   * 첫 진입 — **이번 달**로 자리를 잡는다.
+   *
+   * 달을 앞뒤로 붙여 놓았으므로 그냥 두면 맨 위(지난달)가 보인다.
+   * 달력을 열면 당연히 이번 달이 보여야 한다.
+   */
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || readyRef.current) return;
+    const thisMonth = el.querySelector<HTMLElement>('[data-month-offset="0"]');
+    if (!thisMonth) return;
+    el.scrollTop =
+      thisMonth.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    // 자리를 잡은 다음부터 스크롤 핸들러를 연다.
+    readyRef.current = true;
+  }, [calendarSubView, mode]);
 
   /** 특정 오프셋의 달로 스크롤한다 (이전/다음/오늘 버튼용) */
   const scrollToMonth = useCallback((offset: number) => {
@@ -318,30 +350,36 @@ export function CalendarView() {
       </div>
       )}
 
-      {/* Month navigation */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      {/*
+        Month navigation
+
+        flex-wrap이 없으면 좁은 화면에서 오른쪽 끝(모드 토글)이 잘린다.
+        min-w-[120px]도 고정폭이라 줄어들 여지를 막고 있었다.
+        좁아지면 두 줄로 내려가게 둔다.
+      */}
+      <div className="flex flex-wrap items-center justify-between gap-y-2">
+        <div className="flex min-w-0 items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
-            className="size-8"
+            className="size-8 shrink-0"
             onClick={() => scrollToMonth(monthOffset - 1)}
           >
             <ChevronLeft className="size-4" />
           </Button>
-          <h2 className="min-w-[120px] text-center text-sm font-semibold">
+          <h2 className="min-w-0 shrink text-center text-sm font-semibold whitespace-nowrap sm:min-w-[120px]">
             {format(currentMonth, 'yyyy년 M월', { locale: dateLocale })}
           </h2>
           <Button
             variant="ghost"
             size="icon"
-            className="size-8"
+            className="size-8 shrink-0"
             onClick={() => scrollToMonth(monthOffset + 1)}
           >
             <ChevronRight className="size-4" />
           </Button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Button
             variant="outline"
             size="sm"

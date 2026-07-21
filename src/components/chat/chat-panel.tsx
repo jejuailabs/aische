@@ -1881,9 +1881,17 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
           items-center가 아니라 items-end인 이유: 여러 줄일 때 버튼이
           가운데 떠 있으면 어색하다. 마지막 줄에 맞춘다.
         */}
+        {/*
+          min-w-0 이 없으면 오른쪽 전송 버튼이 화면 밖으로 밀린다.
+
+          flex 자식의 min-width 기본값은 auto라서, 내부 요소의 **고유 최소 너비**
+          아래로는 줄어들지 않는다. textarea는 기본 cols=20이라 그 최소폭이
+          꽤 넓다. (input에서 textarea로 바꾸면서 생긴 회귀다.)
+          min-w-0을 줘야 남는 공간에 맞춰 줄어든다.
+        */}
         <div
           className={cn(
-            'flex flex-1 items-end gap-1 border bg-background px-3 py-1.5',
+            'flex min-w-0 flex-1 items-end gap-1 border bg-background px-3 py-1.5',
             isMultiline ? 'rounded-2xl' : 'rounded-full'
           )}
         >
@@ -1916,7 +1924,8 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
                 ? getFieldLabel(clarificationState.awaiting.fieldName)
                 : t.chat.placeholder
             }
-            className="flex-1 resize-none bg-transparent py-0.5 text-sm leading-relaxed outline-none placeholder:text-muted-foreground/60"
+            /* min-w-0: textarea 자체도 고유 최소폭 아래로 줄어들 수 있어야 한다 */
+            className="min-w-0 flex-1 resize-none bg-transparent py-0.5 text-sm leading-relaxed outline-none placeholder:text-muted-foreground/60"
             style={{ maxHeight: MAX_INPUT_HEIGHT }}
             disabled={isProcessing}
           />

@@ -148,7 +148,10 @@ export function MobileShell() {
   const showView = isSwipeMode ? currentSwipeView : otherView;
 
   return (
-    <div className="flex h-dvh flex-col bg-background">
+    // overflow-x-hidden: 어떤 자식이든 가로로 넘치면 화면 전체가 옆으로 밀리고,
+    // 그러면 오른쪽 끝에 있는 것(전송 버튼, 모드 토글)이 잘려 보인다.
+    // 원인을 하나하나 쫓는 것보다 여기서 한 번 막는 게 확실하다.
+    <div className="flex h-dvh flex-col overflow-x-hidden bg-background">
       {/* Swipe indicator dots */}
       {isSwipeMode && (
         <div className="flex items-center justify-center gap-3 border-b bg-background/95 px-4 py-2 backdrop-blur-sm">
@@ -177,7 +180,7 @@ export function MobileShell() {
 
       {/* Content area */}
       <main
-        className="flex-1 overflow-y-auto"
+        className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden"
         onTouchStart={isSwipeMode ? handleTouchStart : undefined}
         onTouchEnd={isSwipeMode ? handleTouchEnd : undefined}
       >
