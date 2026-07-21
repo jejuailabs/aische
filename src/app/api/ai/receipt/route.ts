@@ -8,15 +8,18 @@
 // ⚠️ 카드번호는 뽑지 않는다. 영수증에 전체 번호가 찍혀 있어도 끝 4자리만 읽는다.
 
 import { NextRequest, NextResponse } from "next/server";
+import { chat, parseJson, OpenAIError } from "@/lib/llm";
+import { composeSystem } from "@/lib/doctrine";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const RAW_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
-// 비전을 지원하는 모델로 강제 (gpt-image-*는 생성 전용이라 못 씀)
-const VISION_MODEL = /^gpt-4o|^gpt-4\.1|^gpt-5/.test(RAW_MODEL)
-  ? RAW_MODEL
-  : "gpt-4o-mini";
-
-const MAX_BYTES = 6 * 1024 * 1024; // 6MB
+// Vercel 서버리스 함수는 **요청 본문 4.5MB**에서 잘린다. 우리 코드에 닿기 전에
+// 플랫폼이 413(FUNCTION_PAYLOAD_TOO_LARGE)으로 끊는다.
+// 이미지는 data URL(base64)로 오므로 원본의 약 4/3 크기가 되고,
+// JSON 래핑과 methods/categories 배열도 같이 실린다.
+//   4.5MB × 0.75 ≈ 3.37MB → 여유를 둬 3MB로 잡는다.
+// 이전 값(6MB)은 절대 도달할 수 없어서, 사용자는 우리 안내문 대신
+// 플랫폼의 정체불명 413을 봤다.
+const MAX_BYTES = 3 * 1024 * 1024;
 
 interface Body {
   /** data:image/...;base64,... 형태 */
@@ -51,7 +54,7 @@ export async function POST(req: NextRequest) {
   // base64는 원본의 약 4/3 크기
   if (image.length * 0.75 > MAX_BYTES) {
     return NextResponse.json(
-      { error: "이미지가 너무 큽니다 (최대 6MB)" },
+      { error: "이미지가 너무 큽니다 (최대 3MB). 사진 크기를 줄여서 다시 올려주세요." },
       { status: 413 }
     );
   }
@@ -63,16 +66,17 @@ export async function POST(req: NextRequest) {
 
   const fmt = (a: string[]) => (a.length ? a.join("\n") : "(없음)");
 
-  const system = `너는 영수증·결제내역 이미지에서 **고정비(구독) 정보**를 뽑는 엔진이다.
+  const system = composeSystem(
+    `너는 영수증·결제내역 이미지에서 **고정비(구독) 정보**를 뽑는 엔진이다.
 
 오늘: ${todayStr}
 
 ## 등록된 결제수단 (끝 4자리로 대조해라)
 ${fmt(methods.map((m) => `- id:"${m.id}" ${m.issuer} ****${m.last4} (${m.label})`))}
 ## 카테고리
-${fmt(categories.map((c) => `- id:"${c.id}" label:"${c.label}"`))}
-
-## 출력 (JSON only)
+${fmt(categories.map((c) => `- id:"${c.id}" label:"${c.label}"`))}`,
+    ["UNCERTAIN"],
+    `## 출력 (JSON only)
 {
   "items": [
     {
@@ -101,47 +105,27 @@ ${fmt(categories.map((c) => `- id:"${c.id}" label:"${c.label}"`))}
    **추측해서 지어내지 마라.** 틀린 금액이 저장되는 게 빈 값보다 나쁘다.
 6. 고정비와 무관한 이미지면 items: [] 로 반환하라.
 
-JSON만. 코드펜스 금지.`;
+JSON만. 코드펜스 금지.`
+  );
 
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        messages: [
-          { role: "system", content: system },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "이 이미지에서 고정비 정보를 뽑아줘." },
-              { type: "image_url", image_url: { url: image, detail: "high" } },
-            ],
-          },
-        ],
-        temperature: 0.1,
-        max_tokens: 1200,
-        response_format: { type: "json_object" },
-      }),
+    const raw = await chat({
+      system,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "이 이미지에서 고정비 정보를 뽑아줘." },
+            { type: "image_url", image_url: { url: image, detail: "high" } },
+          ],
+        },
+      ],
+      json: true,
+      maxTokens: 1200,
+      temperature: 0.1,
     });
 
-    if (!res.ok) {
-      const detail = await res.text();
-      console.error("[receipt] OpenAI error:", res.status, detail.slice(0, 300));
-      return NextResponse.json(
-        { error: "이미지 분석에 실패했습니다", detail: detail.slice(0, 200) },
-        { status: 502 }
-      );
-    }
-
-    const data = await res.json();
-    const raw = (data.choices?.[0]?.message?.content ?? "").trim();
-    const parsed = JSON.parse(
-      raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim()
-    );
+    const parsed = parseJson(raw);
 
     // 방어: 혹시라도 전체 카드번호가 넘어오면 끝 4자리로 잘라낸다
     const items = (Array.isArray(parsed.items) ? parsed.items : []).map(

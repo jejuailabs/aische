@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import {
   useNavStore,
@@ -180,6 +180,20 @@ export function CalendarView() {
     });
   };
 
+  /**
+   * 달력 위에서 휠을 굴리면 월을 넘긴다.
+   * 관성 스크롤(트랙패드)이 한 번에 여러 달을 넘기지 않도록 쿨다운을 둔다.
+   */
+  const wheelLockRef = useRef(0);
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    // 가로 스크롤이나 미세한 흔들림은 무시
+    if (Math.abs(e.deltaY) < 20 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    const now = Date.now();
+    if (now - wheelLockRef.current < 320) return;
+    wheelLockRef.current = now;
+    setMonthOffset((p) => p + (e.deltaY > 0 ? 1 : -1));
+  }, []);
+
   // 모바일에서는 달력 한 칸이 너무 길어지지 않도록 시간당 픽셀을 줄인다.
   const isMobile = useIsMobile();
   const hourPx = isMobile ? HOUR_PX_MOBILE : HOUR_PX_DESKTOP;
@@ -341,7 +355,10 @@ export function CalendarView() {
       )}
 
       {/* Calendar grid */}
-      <div className="overflow-hidden rounded-lg border">
+      <div
+        className="overflow-hidden rounded-lg border"
+        onWheel={handleWheel}
+      >
         {/* Weekday headers */}
         <div className="grid grid-cols-7 border-b bg-muted/50">
           {weekdayLabels.map((day, i) => (

@@ -258,8 +258,14 @@ export function applyPlan(
   plan: IngestPlan,
   rawText: string,
   channel: InputChannel,
-  deps: ApplyDeps
+  deps: ApplyDeps,
+  /**
+   * true면 확정하지 않고 대기함(draft)으로 보낸다.
+   * "지금 정하기 애매한데 잊긴 싫은" 항목을 모아두는 용도.
+   */
+  hold = false
 ): ApplyResult {
+  const aiStatus: "draft" | "confirmed" = hold ? "draft" : "confirmed";
   const ex = plan.raw;
   const enabled = (layer: PlanLayer, label: string) =>
     plan.items.some(
@@ -421,7 +427,12 @@ export function applyPlan(
       kind: "task",
       completion: { mode: "manual" },
       title: s.title || ex.summary,
-      description: "",
+      // 약속의 '내용'이 들어가는 칸. 여기가 비어 있으면 나중에 제목만 남아
+      // 무슨 건이었는지 알 수 없다. AI가 못 뽑았으면 요약이라도 넣는다.
+      // (제목과 같은 말이면 중복이므로 비운다)
+      description:
+        s.description?.trim() ||
+        (ex.summary && ex.summary !== s.title ? ex.summary : ""),
       projectId,
       parentId: targetProjectId,
       schedule,
@@ -430,7 +441,9 @@ export function applyPlan(
       topicId,
       capturedInputId: capture.id,
       aiMeta: {
-        status: "draft",
+        // 사용자가 계획 카드에서 '저장'을 눌러 확인한 결과다.
+        // 여기서 draft로 두면 대기함에서 또 확인을 요구하게 된다.
+        status: aiStatus,
         sourceInput: { channel, rawRef: capture.id },
         suggestedProjectId: targetProjectId,
         matchConfidence: ex.project?.matchConfidence ?? null,
@@ -479,7 +492,9 @@ export function applyPlan(
       topicId,
       capturedInputId: capture.id,
       aiMeta: {
-        status: "draft",
+        // 사용자가 계획 카드에서 '저장'을 눌러 확인한 결과다.
+        // 여기서 draft로 두면 대기함에서 또 확인을 요구하게 된다.
+        status: aiStatus,
         sourceInput: { channel, rawRef: capture.id },
         suggestedProjectId: targetProjectId,
         matchConfidence: ex.project?.matchConfidence ?? null,

@@ -12,6 +12,11 @@ import {
   useCaptureStore,
   useTopicStore,
 } from '@/lib/store';
+import { buildIndex } from '@/lib/memory-index';
+import { buildAgenda, renderAgenda } from '@/lib/agenda';
+import { runAgent } from '@/lib/agent-loop';
+import type { PendingChange } from '@/lib/tool-exec';
+import type { Conflict } from '@/lib/schedule-index';
 import {
   buildPlan,
   applyPlan,
@@ -46,6 +51,7 @@ import {
   Check,
   Sparkles,
   Layers,
+  Inbox,
   TrendingUp,
   Building2,
   FileText,
@@ -82,7 +88,15 @@ interface ProjectMatchData {
 
 interface ChatMessage {
   id: string;
-  role: 'user' | 'ai' | 'draft' | 'project_match' | 'plan' | 'promote';
+  role:
+    | 'user'
+    | 'ai'
+    | 'draft'
+    | 'project_match'
+    | 'plan'
+    | 'promote'
+    /** 수정·삭제 확인 카드 */
+    | 'confirm';
   content: string;
   /** Reference to node stored in Zustand — keeps UI in sync after edits / clarification */
   draftNodeId?: string;
@@ -96,6 +110,12 @@ interface ChatMessage {
   rawText?: string;
   /** 프로젝트 승격을 제안할 주제 id */
   promoteTopicId?: string;
+  /** 확인 대기 중인 변경 (role: confirm) */
+  pending?: PendingChange;
+  /** 등록을 막은 충돌 — 답변 아래에 함께 보여준다 */
+  conflicts?: Conflict[];
+  /** 확인 카드가 이미 처리됐는지 */
+  resolved?: 'applied' | 'cancelled';
 }
 
 interface ClarificationAwaiting {
@@ -127,6 +147,33 @@ interface ChatPanelProps {
    */
   variant?: 'floating' | 'docked';
 }
+
+/**
+ * 입력창이 늘어날 수 있는 최대 높이(px).
+ *
+ * 대략 5~6줄. 이보다 길어지면 입력창 안에서 스크롤한다.
+ * 상한이 없으면 긴 글을 붙여넣었을 때 입력창이 대화 내용을 다 덮어버린다.
+ */
+const MAX_INPUT_HEIGHT = 120;
+
+/** 한 줄일 때의 대략적인 높이(px) — 이보다 크면 여러 줄로 본다 */
+const SINGLE_LINE_HEIGHT = 28;
+
+/**
+ * 도구 실행 중 표시할 문구.
+ *
+ * "생각 중…"만 계속 띄우면 사용자는 멈춘 줄 안다.
+ * 무엇을 하고 있는지 보여야 기다릴 수 있다.
+ */
+const TOOL_LABEL: Record<string, string> = {
+  search_schedules: '일정을 찾는 중…',
+  get_schedule: '일정 내용을 확인하는 중…',
+  search_notes: '기록을 찾는 중…',
+  search_people: '인물을 찾는 중…',
+  stage_new_entry: '등록할 내용을 정리하는 중…',
+  update_schedule: '수정할 내용을 확인하는 중…',
+  delete_schedule: '삭제할 항목을 확인하는 중…',
+};
 
 export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   const { t, locale } = useLocale();
@@ -166,7 +213,36 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   const [isDark, setIsDark] = useState(false);
   const welcomeShownRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // textarea다 — Shift+Enter 줄바꿈을 받으려면 단일 라인 input으로는 안 된다.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  /** 입력창이 두 줄 이상인지 — 테두리 곡률을 바꾸는 데만 쓴다 */
+  const [isMultiline, setIsMultiline] = useState(false);
+
+  /**
+   * 입력 높이를 내용에 맞춘다.
+   *
+   * textarea는 기본이 고정 높이라 여러 줄을 써도 한 줄만 보인다.
+   * scrollHeight를 재서 늘리되, 상한을 두고 그 뒤로는 스크롤시킨다 —
+   * 안 그러면 긴 글을 붙여넣었을 때 입력창이 화면을 다 덮는다.
+   */
+  const autoGrow = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto'; // 줄여야 할 때를 위해 먼저 초기화
+    const next = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT);
+    el.style.height = `${next}px`;
+    // 줄바꿈 문자 유무가 아니라 실제 높이로 판단한다 —
+    // 긴 한 줄이 자동 줄바꿈된 경우에도 여러 줄이다.
+    setIsMultiline(next > SINGLE_LINE_HEIGHT);
+  }, []);
+
+  /** 전송·초기화 후 입력창 높이를 한 줄로 되돌린다 */
+  const resetInputHeight = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    setIsMultiline(false);
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   /* ---- stores ---- */
@@ -188,6 +264,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   const addOrg = useOrgStore((s) => s.addOrg);
   const updateOrg = useOrgStore((s) => s.updateOrg);
   const findOrg = useOrgStore((s) => s.findByName);
+  const captures = useCaptureStore((s) => s.captures);
   const addCapture = useCaptureStore((s) => s.addCapture);
   const updateCapture = useCaptureStore((s) => s.updateCapture);
   const topics = useTopicStore((s) => s.topics);
@@ -354,9 +431,76 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
     );
   }, []);
 
-  /** 계획을 실제로 저장 — 각 층으로 분산 저장 */
-  const handleApplyPlan = useCallback(
+  /**
+   * 확인 카드의 변경을 실제로 적용한다.
+   *
+   * **AI는 여기까지 오지 못한다.** 도구는 제안만 만들고, 적용은 사용자가
+   * 이 버튼을 눌러야 일어난다. AI가 잘못 판단해 지운 건 되돌릴 수 없어서다.
+   */
+  const handleApplyPending = useCallback(
     (msgId: string) => {
+      const msg = messages.find((m) => m.id === msgId);
+      const pending = msg?.pending;
+      if (!pending) return;
+
+      const store = useNodeStore.getState();
+      const node = store.nodes[pending.nodeId];
+      if (!node) {
+        toast.error('대상 일정을 찾을 수 없습니다. 이미 지워졌을 수 있습니다.');
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msgId ? { ...m, resolved: 'cancelled' } : m)),
+        );
+        return;
+      }
+
+      if (pending.kind === 'delete_schedule') {
+        store.removeNodeWithLog(pending.nodeId);
+        toast.success(`"${pending.targetTitle}" 삭제됨`);
+      } else {
+        // changes는 필드별 { before, after }다. after만 반영한다.
+        const updates: Partial<Node> = {};
+        for (const c of pending.changes) {
+          if (c.field === 'title') updates.title = c.after;
+          else if (c.field === 'description') updates.description = c.after;
+          else if (c.field === 'location' && node.schedule) {
+            updates.schedule = { ...node.schedule, location: c.after };
+          } else if (c.field === 'date' && node.schedule) {
+            // after는 "YYYY-MM-DD" — 시각은 유지한다.
+            const [y, mo, d] = c.after.slice(0, 10).split('-').map(Number);
+            const start = new Date(node.schedule.startAt);
+            const end = new Date(node.schedule.endAt);
+            const span = end.getTime() - start.getTime();
+            start.setFullYear(y, mo - 1, d);
+            updates.schedule = {
+              ...(updates.schedule ?? node.schedule),
+              startAt: start,
+              endAt: new Date(start.getTime() + (isNaN(span) ? 3600000 : span)),
+            };
+          }
+        }
+        store.updateNodeWithLog(pending.nodeId, updates);
+        toast.success(`"${pending.targetTitle}" 수정됨`);
+      }
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, resolved: 'applied' } : m)),
+      );
+    },
+    [messages],
+  );
+
+  const handleCancelPending = useCallback((msgId: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msgId ? { ...m, resolved: 'cancelled' } : m)),
+    );
+  }, []);
+
+  /**
+   * 계획을 저장한다.
+   * @param hold true면 확정하지 않고 대기함으로 보낸다 ("나중에 정할래")
+   */
+  const handleApplyPlan = useCallback(
+    (msgId: string, hold = false) => {
       const msg = messages.find((m) => m.id === msgId);
       if (!msg?.plan || !msg.rawText) return;
 
@@ -378,11 +522,16 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
         findTopic,
         findTopicById: (id) => useTopicStore.getState().topics[id],
         getTopicById: (id) => useTopicStore.getState().topics[id],
-      });
+      }, hold);
 
       setMessages((prev) =>
         prev.map((m) => (m.id === msgId ? { ...m, planApplied: true } : m)),
       );
+
+      if (hold) {
+        toast.success('대기함에 보관했습니다. 나중에 확정하세요');
+        return;
+      }
 
       const parts: string[] = [];
       if (result.nodeIds.length) parts.push(`일정/실행 ${result.nodeIds.length}`);
@@ -393,6 +542,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
       );
 
       // 주제에 행동이 붙어 승격 조건을 넘겼으면 제안한다 (자동 생성하지 않음)
+      // 대기함 보관은 아직 확정이 아니므로 승격 제안하지 않는다
       if (result.topicId) {
         const topic = useTopicStore.getState().topics[result.topicId];
         if (topic && shouldPromoteTopic(topic)) {
@@ -452,6 +602,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
   }, []);
 
+  /** 이 대화에서만 지운다 (아무것도 저장하지 않음) */
   const handleDiscardPlan = useCallback((msgId: string) => {
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
   }, []);
@@ -609,6 +760,8 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
     (text: string) => {
       if (!text.trim()) return;
       setInput(text);
+      // 음성 결과가 길면 여러 줄이 된다 — 높이를 맞춰준다
+      requestAnimationFrame(() => autoGrow(inputRef.current));
       setTimeout(() => {
         const sendBtn = document.querySelector('[data-send-btn]') as HTMLButtonElement;
         sendBtn?.click();
@@ -639,6 +792,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
         { id: Date.now().toString(), role: 'user' as const, content: text },
       ]);
       setInput('');
+      resetInputHeight();
       setIsProcessing(true);
 
       // small delay for natural feel
@@ -695,6 +849,7 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
     };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
+    resetInputHeight();
     setIsProcessing(true);
 
     /* ---- file attachment ---- */
@@ -757,26 +912,107 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
 
     /* ---- 오케스트레이터 호출 ---- */
     try {
-      // 다가오는 일정 요약 — 대화/질의 담당이 근거로 쓴다
+      // 실제로 잡혀 있는 일정.
+      //
+      // 예전에는 여기서 `s.startAt >= now`로 걸렀는데, 종일 일정의 startAt은
+      // 그날 00:00이라 **오늘 일정이 자정 직후부터 사라졌다.** 그래서 AI가
+      // "오늘 당근 모임 있잖아"에 "등록된 일정이 없다"고 답했다.
+      // buildAgenda는 날짜 기준으로 뽑는다 (agenda.ts 참고).
       const now = new Date();
-      const upcoming = Object.values(nodes)
-        .filter((n) => n.schedule && n.aiMeta?.status !== 'draft')
-        .map((n) => ({ n, s: n.schedule! }))
-        .filter(({ s }) => s.recurrence || s.startAt >= now)
-        .sort((a, b) => a.s.startAt.getTime() - b.s.startAt.getTime())
-        .slice(0, 12)
-        .map(({ n, s }) => ({
-          title: n.title,
-          when: `${s.startAt.getMonth() + 1}/${s.startAt.getDate()}`,
-          recurrence: describeRecurrence(s.recurrence) || null,
-        }));
+      const agenda = buildAgenda(Object.values(nodes), now);
 
+      // ctxSummary가 아직 쓰는 구버전 요약 — agenda에서 파생시킨다.
+      const upcoming = agenda.map((a) => ({
+        title: a.title,
+        when: a.date.slice(5).replace('-', '/'),
+        recurrence: a.recurrence,
+      }));
+
+      /* ---- 1) 에이전트: 도구를 써서 스스로 조회·수정 ---- */
+      //
+      // 여기서 대부분이 끝난다. 조회·수정·삭제·되묻기는 에이전트가 처리하고,
+      // "새로 등록할 내용"이라고 판단했을 때만 아래 추출 파이프라인으로 넘어간다.
+      // 생성 경로를 하나로 유지하려는 것이다.
+      const agentOut = await runAgent(
+        text,
+        {
+          nodes: Object.values(nodes),
+          people: Object.values(people),
+          topics: Object.values(topics),
+          captures: Object.values(captures),
+        },
+        async (msgs) => {
+          const r = await fetch('/api/ai/agent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: msgs,
+              summary: renderAgenda(agenda),
+            }),
+          });
+          if (!r.ok) throw new Error('agent API error');
+          return r.json();
+        },
+        // 도구 결과 포맷은 프로바이더마다 다르다. 서버가 알려준 형식을 쓴다.
+        (id, content) => ({ role: 'tool', tool_call_id: id, content }),
+        {
+          onStep: (s) =>
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === thinkId
+                  ? { ...m, content: TOOL_LABEL[s.tool] ?? t.chat.thinking }
+                  : m,
+              ),
+            ),
+        },
+      );
+
+      // 확인이 필요한 변경(수정·삭제) → 확인 카드
+      if (agentOut.pending) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === thinkId
+              ? {
+                  id: thinkId,
+                  role: 'confirm' as const,
+                  content: agentOut.text,
+                  pending: agentOut.pending!,
+                }
+              : m,
+          ),
+        );
+        setIsProcessing(false);
+        return;
+      }
+
+      // 등록으로 넘어가지 않았으면 = 답변으로 끝난 것 (충돌 안내 포함)
+      if (!agentOut.staged) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === thinkId
+              ? {
+                  id: thinkId,
+                  role: 'ai' as const,
+                  content: agentOut.text || '...',
+                  conflicts: agentOut.conflicts.length
+                    ? agentOut.conflicts
+                    : undefined,
+                }
+              : m,
+          ),
+        );
+        setIsProcessing(false);
+        return;
+      }
+
+      /* ---- 2) 등록: 기존 추출 파이프라인 → 계획 카드 ---- */
       const res = await fetch('/api/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: text,
-          // 직전 대화 — 라우터가 맥락을 보고 판단하도록
+          // 에이전트가 정리한 문장을 넘긴다. 여러 턴에 걸쳐 모인 정보가
+          // 합쳐져 있을 수 있으므로 원문 그대로가 아니다.
+          input: agentOut.staged,
           history: messages
             .filter((m) => m.role === 'user' || m.role === 'ai')
             .slice(-6)
@@ -803,6 +1039,10 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               .filter((tp) => tp.status === 'collecting')
               .map((tp) => ({ id: tp.id, label: tp.label })),
             upcoming,
+            // AI가 "지금까지 뭐가 쌓였는지" 볼 수 있게 한 줄 인덱스를 넘긴다.
+            // 이게 없으면 이름 목록만 보고 그럴듯한 걸 지어낸다.
+            index: buildIndex(Object.values(captures)),
+            agenda,
             counts: {
               일정: Object.values(nodes).length,
               인물: Object.values(people).length,
@@ -1095,6 +1335,18 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               <Check className="size-3" />
               저장 ({enabledCount})
             </Button>
+            {/* 지금 정하기 애매한 건 대기함에 넣어두고 나중에 확정한다 */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              onClick={() => handleApplyPlan(msg.id, true)}
+              disabled={enabledCount === 0}
+              title="캘린더에 넣지 않고 대기함에 보관합니다"
+            >
+              <Inbox className="size-3" />
+              나중에
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -1106,6 +1358,101 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
             </Button>
           </div>
         )}
+      </div>
+    );
+  };
+
+  /**
+   * 수정·삭제 확인 카드.
+   *
+   * 전/후를 나란히 보여준다. "고쳤습니다"라고만 하면 무엇이 바뀌었는지
+   * 알 수 없고, 그건 사용자가 확인할 수 없는 변경이다.
+   */
+  const renderConfirmCard = (msg: ChatMessage) => {
+    const p = msg.pending!;
+    const isDelete = p.kind === 'delete_schedule';
+    const done = !!msg.resolved;
+
+    return (
+      <div key={msg.id} className="flex gap-2">
+        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
+          <MessageCircle className="size-3 text-muted-foreground" />
+        </div>
+        <div className="w-full max-w-[85%] space-y-2">
+          {msg.content ? (
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">
+              {msg.content}
+            </p>
+          ) : null}
+
+          <div
+            className={cn(
+              'rounded-xl border bg-card p-3',
+              isDelete && 'border-destructive/40',
+              done && 'opacity-60',
+            )}
+          >
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+              {isDelete ? (
+                <XCircle className="size-3.5 text-destructive" />
+              ) : (
+                <Pencil className="size-3.5 text-primary" />
+              )}
+              {isDelete ? '이 일정을 삭제할까요?' : '이렇게 바꿀까요?'}
+            </p>
+
+            <p className="mb-2 text-sm font-medium">{p.targetTitle}</p>
+
+            {isDelete ? (
+              <p className="text-xs text-destructive">
+                되돌릴 수 없습니다.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {p.changes.map((c) => (
+                  <div key={c.field} className="text-xs">
+                    <span className="text-muted-foreground">{c.label}</span>
+                    <div className="mt-0.5 space-y-0.5">
+                      {/* 전 값은 취소선으로 — 없어지는 것임을 눈으로 알 수 있게 */}
+                      <p className="whitespace-pre-wrap text-muted-foreground line-through">
+                        {c.before || '(비어 있음)'}
+                      </p>
+                      <p className="whitespace-pre-wrap font-medium text-foreground">
+                        {c.after}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {done ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {msg.resolved === 'applied' ? '적용됨' : '취소됨'}
+              </p>
+            ) : (
+              <div className="mt-3 flex gap-2">
+                <Button
+                  size="sm"
+                  variant={isDelete ? 'destructive' : 'default'}
+                  className="h-7 flex-1 text-xs"
+                  onClick={() => handleApplyPending(msg.id)}
+                >
+                  <Check className="mr-1 size-3" />
+                  {isDelete ? '삭제' : '적용'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 flex-1 text-xs"
+                  onClick={() => handleCancelPending(msg.id)}
+                >
+                  취소
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     );
   };
@@ -1409,14 +1756,36 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
         if (msg.role === 'plan' && msg.plan) return renderPlanCard(msg);
         if (msg.role === 'draft' && msg.draftNodeId) return renderDraftCard(msg);
         if (msg.role === 'project_match') return renderProjectMatchCard(msg);
+        if (msg.role === 'confirm' && msg.pending) return renderConfirmCard(msg);
         return (
           <div key={msg.id} className="flex gap-2">
             <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted">
               <MessageCircle className="size-3 text-muted-foreground" />
             </div>
-            <p className="max-w-[85%] text-sm leading-relaxed text-foreground">
-              {msg.content}
-            </p>
+            <div className="max-w-[85%] space-y-2">
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                {msg.content}
+              </p>
+              {/*
+                충돌은 AI 말과 별개로 항상 보여준다.
+                모델이 설명을 빠뜨려도 사용자는 무엇과 겹쳤는지 알아야 한다.
+              */}
+              {msg.conflicts?.length ? (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                  <p className="mb-1 flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+                    <AlertCircle className="size-3" />
+                    이미 등록된 일정과 겹칩니다
+                  </p>
+                  <ul className="space-y-0.5">
+                    {msg.conflicts.map((c, i) => (
+                      <li key={i} className="text-xs text-muted-foreground">
+                        · {c.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
           </div>
         );
       })}
@@ -1465,14 +1834,38 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
 
         <VoiceButton onTranscript={handleVoiceTranscript} />
 
-        <div className="flex flex-1 items-center gap-1 rounded-full border bg-background px-3 py-1.5">
-          <input
+        {/*
+          한 줄일 때는 알약 모양을 유지해야 해서 rounded-full을 쓰는데,
+          여러 줄로 늘어나면 그 곡률이 이상해진다. 그래서 높이에 따라
+          rounded-full ↔ rounded-2xl로 바꾼다.
+          items-center가 아니라 items-end인 이유: 여러 줄일 때 버튼이
+          가운데 떠 있으면 어색하다. 마지막 줄에 맞춘다.
+        */}
+        <div
+          className={cn(
+            'flex flex-1 items-end gap-1 border bg-background px-3 py-1.5',
+            isMultiline ? 'rounded-2xl' : 'rounded-full'
+          )}
+        >
+          <textarea
             ref={inputRef}
-            type="text"
+            rows={1}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              autoGrow(e.currentTarget);
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !isProcessing) {
+              // Shift+Enter는 그냥 흘려보낸다 — textarea 기본 동작이 줄바꿈이다.
+              // Enter 단독일 때만 가로채서 전송한다.
+              // (IME 조합 중의 Enter는 한글 확정이지 전송이 아니다. 이걸 안 막으면
+              //  "안녕"을 치다가 조합 확정하는 순간 전송돼 버린다.)
+              if (
+                e.key === 'Enter' &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                !isProcessing
+              ) {
                 e.preventDefault();
                 handleSend();
               }
@@ -1483,7 +1876,8 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
                 ? getFieldLabel(clarificationState.awaiting.fieldName)
                 : t.chat.placeholder
             }
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+            className="flex-1 resize-none bg-transparent py-0.5 text-sm leading-relaxed outline-none placeholder:text-muted-foreground/60"
+            style={{ maxHeight: MAX_INPUT_HEIGHT }}
             disabled={isProcessing}
           />
         </div>

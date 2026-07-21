@@ -6,11 +6,14 @@ import {
   useNodeStore,
   useCategoryStore,
   useProjectStore,
+  useCaptureStore,
 } from '@/lib/store';
 import { useLocale } from '@/hooks/use-locale';
 import { generateId } from '@/lib/services';
 import { format } from 'date-fns';
-import { Trash2, Plus, X, CheckSquare, Square, Check } from 'lucide-react';
+import {
+  Trash2, Plus, X, CheckSquare, Square, Check, MessageSquareText, ChevronDown,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -125,6 +128,7 @@ export function NodeDetailSheet({ nodeId, open, onOpenChange }: NodeDetailSheetP
   const { t } = useLocale();
   const allNodes = useNodeStore((s) => s.nodes);
   const updateNodeWithLog = useNodeStore((s) => s.updateNodeWithLog);
+  const captures = useCaptureStore((s) => s.captures);
   const removeNodeWithLog = useNodeStore((s) => s.removeNodeWithLog);
   const propagateCompletion = useNodeStore((s) => s.propagateCompletion);
   const recalcParentProgress = useNodeStore((s) => s.recalcParentProgress);
@@ -136,6 +140,27 @@ export function NodeDetailSheet({ nodeId, open, onOpenChange }: NodeDetailSheetP
   // --- form state ---
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  /** 원문 섹션 펼침 여부 — 기본은 접힘 */
+  const [showSource, setShowSource] = useState(false);
+
+  /**
+   * 이 항목을 만들어낸 입력 원문.
+   *
+   * 노드 생성 시 capturedInputId로 연결돼 있다(ingest.ts).
+   * 옛 데이터에는 연결이 없을 수 있으므로 없으면 섹션 자체를 안 그린다.
+   */
+  const source = node?.capturedInputId
+    ? captures[node.capturedInputId] ?? null
+    : null;
+  const sourceText = source?.rawText?.trim() || '';
+  const sourceDate = source
+    ? format(
+        source.createdAt instanceof Date
+          ? source.createdAt
+          : new Date(source.createdAt),
+        'yyyy-MM-dd HH:mm'
+      )
+    : '';
   const [status, setStatus] = useState<NodeStatus>('scheduled');
   const [urgency, setUrgency] = useState(3);
   const [importance, setImportance] = useState(3);
@@ -162,6 +187,9 @@ export function NodeDetailSheet({ nodeId, open, onOpenChange }: NodeDetailSheetP
     if (!n) return;
     setTitle(n.title);
     setDescription(n.description);
+    // 다른 항목으로 넘어가면 원문 섹션은 다시 접는다 —
+    // 이전 항목에서 펼쳐둔 상태가 따라오면 엉뚱한 원문을 펼친 것처럼 보인다.
+    setShowSource(false);
     setStatus(n.status);
     setUrgency(n.priority.urgency);
     setImportance(n.priority.importance);
@@ -321,6 +349,52 @@ export function NodeDetailSheet({ nodeId, open, onOpenChange }: NodeDetailSheetP
                 />
               </div>
 
+              {/*
+                원문 보기.
+
+                제목과 설명은 AI가 요약한 것이라 뉘앙스가 빠진다.
+                "그 미팅 왜 잡았더라"는 결국 내가 실제로 뭐라고 말했는지를
+                봐야 풀린다. 그래서 이 항목을 만들어낸 입력 원문을 그대로 보여준다.
+
+                기본은 접어둔다 — 늘 펴져 있으면 편집 화면이 길어지기만 한다.
+              */}
+              {sourceText && (
+                <div className="rounded-md border bg-muted/30">
+                  <button
+                    type="button"
+                    onClick={() => setShowSource((v) => !v)}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
+                    aria-expanded={showSource}
+                  >
+                    <MessageSquareText className="h-3.5 w-3.5 shrink-0" />
+                    <span className="flex-1">{t.nodeDetail.sourceLabel}</span>
+                    <ChevronDown
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0 transition-transform',
+                        showSource && 'rotate-180'
+                      )}
+                    />
+                  </button>
+
+                  {showSource && (
+                    <div className="border-t px-3 py-2.5">
+                      {/*
+                        whitespace-pre-wrap: 원문의 줄바꿈을 살린다.
+                        요약이 아니라 원문이라는 게 눈에 보여야 한다.
+                      */}
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed">
+                        {sourceText}
+                      </p>
+                      {sourceDate && (
+                        <p className="mt-2 text-[10px] text-muted-foreground">
+                          {sourceDate} · {t.nodeDetail.sourceHint}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* 상태 */}
               <div className="space-y-1.5">
                 <label className="block text-xs text-muted-foreground">
@@ -392,11 +466,21 @@ export function NodeDetailSheet({ nodeId, open, onOpenChange }: NodeDetailSheetP
                   <label className="text-xs font-medium">
                     {t.nodeDetail.scheduleSection}
                   </label>
+                  {/*
+                    시간을 말하지 않은 입력은 allDay=true로 들어온다.
+                    예전엔 그 상태에서 시작/종료 칸을 아예 숨겼는데, 그러면
+                    "나중에 시간을 넣는 방법"이 화면에 없어서 막힌다.
+                    그래서 토글을 '시간 지정'으로 뒤집고, 칸은 항상 보이되
+                    꺼져 있을 때 비활성화만 한다.
+                  */}
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground">
-                      {t.nodeDetail.allDay}
+                      {t.nodeDetail.setTime}
                     </span>
-                    <Switch checked={allDay} onCheckedChange={setAllDay} />
+                    <Switch
+                      checked={!allDay}
+                      onCheckedChange={(on) => setAllDay(!on)}
+                    />
                   </div>
                 </div>
 
@@ -412,31 +496,36 @@ export function NodeDetailSheet({ nodeId, open, onOpenChange }: NodeDetailSheetP
                   />
                 </div>
 
-                {!allDay && (
-                  <div className="flex gap-2">
-                    <div className="flex-1 space-y-1.5">
-                      <label className="block text-[10px] text-muted-foreground">
-                        {t.nodeDetail.startTime}
-                      </label>
-                      <Input
-                        type="time"
-                        value={startTime}
-                        onChange={(e) => setStartTime(e.target.value)}
-                        className="h-9 text-xs"
-                      />
-                    </div>
-                    <div className="flex-1 space-y-1.5">
-                      <label className="block text-[10px] text-muted-foreground">
-                        {t.nodeDetail.endTime}
-                      </label>
-                      <Input
-                        type="time"
-                        value={endTime}
-                        onChange={(e) => setEndTime(e.target.value)}
-                        className="h-9 text-xs"
-                      />
-                    </div>
+                <div className="flex gap-2">
+                  <div className="flex-1 space-y-1.5">
+                    <label className="block text-[10px] text-muted-foreground">
+                      {t.nodeDetail.startTime}
+                    </label>
+                    <Input
+                      type="time"
+                      value={startTime}
+                      disabled={allDay}
+                      onChange={(e) => setStartTime(e.target.value)}
+                      className="h-9 text-xs"
+                    />
                   </div>
+                  <div className="flex-1 space-y-1.5">
+                    <label className="block text-[10px] text-muted-foreground">
+                      {t.nodeDetail.endTime}
+                    </label>
+                    <Input
+                      type="time"
+                      value={endTime}
+                      disabled={allDay}
+                      onChange={(e) => setEndTime(e.target.value)}
+                      className="h-9 text-xs"
+                    />
+                  </div>
+                </div>
+                {allDay && (
+                  <p className="text-[10px] leading-relaxed text-muted-foreground">
+                    {t.nodeDetail.timeUnset}
+                  </p>
                 )}
 
                 <div className="space-y-1.5">

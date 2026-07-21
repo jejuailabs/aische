@@ -11,12 +11,12 @@
 // 틀린 기록이 되기 때문이다.
 
 import { NextRequest, NextResponse } from "next/server";
+import { chat, parseJson, OpenAIError } from "@/lib/llm";
+import { composeSystem } from "@/lib/doctrine";
 import { resolveDateExpr } from "@/lib/date-expr";
 import { verifyQuote } from "@/lib/diary";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const RAW_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
-const MODEL = RAW_MODEL === "gpt-5-mini" ? "gpt-4o-mini" : RAW_MODEL;
 
 interface Body {
   /** 사용자가 쓴/말한 원문 */
@@ -53,22 +53,21 @@ export async function POST(req: NextRequest) {
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const fmt = (a: string[]) => (a.length ? a.join("\n") : "(없음)");
 
-  const system = `너는 일기를 읽고 **메타데이터만** 뽑는 엔진이다.
+  const system = composeSystem(
+    `너는 일기를 읽고 **메타데이터만** 뽑는 엔진이다.
 
 오늘: ${todayStr}(${dow})
 
 ## 등록된 인물
 ${fmt(people.map((p) => `- id:"${p.id}" name:"${p.name}" org:"${p.org ?? ""}"`))}
 ## 등록된 조직
-${fmt(orgs.map((o) => `- id:"${o.id}" name:"${o.name}"`))}
+${fmt(orgs.map((o) => `- id:"${o.id}" name:"${o.name}"`))}`,
+    ["PERSON", "TIME_UNSPECIFIED", "UNCERTAIN"],
+    `## 이 라우트의 규칙
 
-## 절대 규칙
 1. **원문을 고치거나 요약해서 돌려주지 마라.** 원문은 이미 그대로 저장된다.
    너는 원문 옆에 붙일 정보만 만든다. 맞춤법도 고치지 마라.
-2. 사람에 대한 감정 판정에는 **반드시 근거가 된 원문 조각(quote)을 그대로 인용**하라.
-   인용은 원문에서 글자 그대로 복사한다. 바꿔 쓰지 마라. 근거를 못 찾으면 그 사람은 빼라.
-3. 쓰이지 않은 감정을 추측하지 마라. "친구를 만났다"에는 감정이 없다. mood는 null로 둬라.
-4. 일기 쓴 사람 자신은 인물로 잡지 마라. ("나", "내가")
+2. 일기 쓴 사람 자신은 인물로 잡지 마라. ("나", "내가")
 
 ## 출력 (JSON only)
 {
@@ -100,50 +99,19 @@ ${fmt(orgs.map((o) => `- id:"${o.id}" name:"${o.name}"`))}
 그 사람과의 **이번 일**에 대한 감정이다. 그 사람 자체에 대한 평가가 아니다.
 같은 사람이라도 날마다 다를 수 있다.
 
-JSON만. 코드펜스 금지.`;
+JSON만. 코드펜스 금지.`
+  );
 
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: text },
-        ],
-        temperature: 0.2,
-        max_tokens: 1400,
-        response_format: { type: "json_object" },
-      }),
+    const raw = await chat({
+      system,
+      messages: [{ role: "user", content: text }],
+      json: true,
+      maxTokens: 1400,
+      temperature: 0.2,
     });
 
-    if (!res.ok) {
-      const detail = await res.text();
-      console.error("[diary] OpenAI error:", res.status, detail.slice(0, 300));
-      // 분석에 실패해도 원문은 저장돼야 하므로, 빈 메타를 돌려준다
-      return NextResponse.json({
-        analyzed: false,
-        title: text.slice(0, 20),
-        entryDate: null,
-        mood: null,
-        emotions: [],
-        events: [],
-        places: [],
-        tags: [],
-        people: [],
-        organizations: [],
-      });
-    }
-
-    const data = await res.json();
-    const raw = (data.choices?.[0]?.message?.content ?? "").trim();
-    const p = JSON.parse(
-      raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim()
-    );
+    const p = parseJson(raw);
 
     // 날짜 표현은 코드로 계산 (LLM 날짜 산술 불신 — date-expr.ts와 동일 원칙)
     let entryDate: string | null = null;
@@ -210,10 +178,20 @@ JSON만. 코드펜스 금지.`;
         .filter((o: any) => o.name),
     });
   } catch (err: any) {
+    // 분석이 실패해도 원문은 이미 클라이언트가 저장했다.
+    // 여기서 500을 던지면 화면이 에러로 보이므로, 빈 메타를 돌려준다.
     console.error("[diary] error:", err);
-    return NextResponse.json(
-      { error: err?.message ?? "Internal error" },
-      { status: 500 }
-    );
+    return NextResponse.json({
+      analyzed: false,
+      title: text.slice(0, 20),
+      entryDate: null,
+      mood: null,
+      emotions: [],
+      events: [],
+      places: [],
+      tags: [],
+      people: [],
+      organizations: [],
+    });
   }
 }

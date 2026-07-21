@@ -678,11 +678,17 @@ export function MandaratView() {
           {unsortedNodes.length > 0 && effectiveProjectId && (
             <div className="mt-6">
               <Separator className="mb-4" />
-              <div className="flex items-center gap-2 mb-3">
+              <div className="flex items-center gap-2 mb-1">
                 <Inbox className="size-4 text-muted-foreground" />
                 <h3 className="text-sm font-semibold">{t.mandarat.unsortedItems}</h3>
                 <Badge variant="secondary" className="text-[10px] h-5 px-1.5">{unsortedNodes.length}</Badge>
               </div>
+              {/* 왜 이 목록이 만다라트 화면에 있는지 밝힌다 */}
+              <p className="mb-3 text-xs text-muted-foreground">
+                아직 프로젝트에 속하지 않은 항목입니다. 지금 보고 있는
+                &lsquo;{projects.find((p) => p.id === effectiveProjectId)?.title ?? '이 프로젝트'}&rsquo;
+                로 옮길 수 있습니다.
+              </p>
               <div className="space-y-2">
                 {unsortedNodes.map((node) => (
                   <div key={node.id} className="flex items-center gap-2 rounded-lg border p-3">

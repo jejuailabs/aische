@@ -14,6 +14,10 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    // 유닛 테스트를 node --experimental-strip-types로 직접 돌리는데,
+    // raw node ESM은 확장자 없는 상대 경로를 해석하지 못한다.
+    // noEmit 프로젝트에서만 켤 수 있는 옵션이고, 여기가 그 경우다.
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",

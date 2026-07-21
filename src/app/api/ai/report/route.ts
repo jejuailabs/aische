@@ -7,11 +7,11 @@
 // 숫자를 다시 세거나 없는 사실을 만들어내지 못하게 강하게 제약한다.
 
 import { NextRequest, NextResponse } from "next/server";
+import { chat, parseJson, OpenAIError } from "@/lib/llm";
+import { composeSystem } from "@/lib/doctrine";
 import type { ProjectDossier, ProjectSignal } from "@/lib/report";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const RAW_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
-const MODEL = RAW_MODEL === "gpt-5-mini" ? "gpt-4o-mini" : RAW_MODEL;
 
 interface Body {
   dossier: ProjectDossier;
@@ -43,19 +43,18 @@ export async function POST(req: NextRequest) {
   const now = new Date();
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
-  const system = `너는 프로젝트 진행 상황을 읽고 **통찰이 있는 리포트**를 쓰는 분석가다.
+  const system = composeSystem(
+    `너는 프로젝트 진행 상황을 읽고 **통찰이 있는 리포트**를 쓰는 분석가다.
 
-오늘: ${todayStr}
-
-## 절대 규칙
-1. **숫자를 새로 만들지 마라.** 아래 데이터에 있는 값만 인용한다.
-   진행률·건수·날짜를 네가 계산하거나 추정하지 마라. 이미 계산돼 있다.
-2. 데이터에 없는 사실을 쓰지 마라. 모르면 "기록이 없다"고 써라.
-3. **숫자를 나열하지 마라. 그 숫자가 무슨 뜻인지 써라.**
+오늘: ${todayStr}`,
+    ["UNCERTAIN"],
+    `## 이 라우트의 규칙
+1. **숫자를 나열하지 마라. 그 숫자가 무슨 뜻인지 써라.**
    나쁨: "완료 3건, 미착수 5건입니다."
    좋음: "8건 중 3건만 끝났고, 최근 두 달간 완료된 게 없습니다. 초기에 몰아서 하고 멈춘 패턴입니다."
-4. 문제를 발견하면 돌려 말하지 마라. 정체돼 있으면 정체됐다고 써라.
-5. 한국어. 담백한 서술체. 과장·응원 문구 금지.
+2. 문제를 발견하면 돌려 말하지 마라. 정체돼 있으면 정체됐다고 써라.
+3. 한국어. 담백한 서술체. 과장·응원 문구 금지.
+4. 진행률·건수·날짜는 이미 계산돼 있다. 인용만 하고 다시 세지 마라. (원칙 2)
 
 ## 출력 (JSON only)
 {
@@ -75,7 +74,8 @@ export async function POST(req: NextRequest) {
 - nextActions는 2~4개. 막연한 말("잘 관리한다") 금지. 데이터에 있는 항목명을 짚어라.
 - 항목이 하나도 없는 빈 프로젝트면 솔직하게 "아직 기록된 활동이 없다"고 쓰고 nextActions만 제안하라.
 
-JSON만. 코드펜스 금지.`;
+JSON만. 코드펜스 금지.`
+  );
 
   // AI에게 넘길 데이터는 필요한 만큼만 추린다 (토큰 절약 + 환각 여지 축소)
   const payload = {
@@ -105,38 +105,15 @@ JSON만. 코드펜스 금지.`;
   };
 
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: JSON.stringify(payload, null, 1) },
-        ],
-        temperature: 0.4,
-        max_tokens: 2000,
-        response_format: { type: "json_object" },
-      }),
+    const raw = await chat({
+      system,
+      messages: [{ role: "user", content: JSON.stringify(payload, null, 1) }],
+      json: true,
+      maxTokens: 2000,
+      temperature: 0.4,
     });
 
-    if (!res.ok) {
-      const detail = await res.text();
-      console.error("[report] OpenAI error:", res.status, detail.slice(0, 300));
-      return NextResponse.json(
-        { error: "리포트 생성에 실패했습니다" },
-        { status: 502 }
-      );
-    }
-
-    const data = await res.json();
-    const raw = (data.choices?.[0]?.message?.content ?? "").trim();
-    const p = JSON.parse(
-      raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim()
-    );
+    const p = parseJson(raw);
 
     return NextResponse.json({
       headline: String(p.headline ?? ""),

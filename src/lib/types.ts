@@ -362,6 +362,13 @@ export interface ExtractedTopic {
 
 export interface ExtractedSchedule {
   title: string;
+  /**
+   * 제목에 안 담긴 내용 — 무슨 이야기를 하는 자리인지, 뭘 준비하는지.
+   *
+   * 제목은 캘린더 한 칸에 들어가야 해서 짧다. 이게 없으면 나중에
+   * "그 미팅이 무슨 건이었지"를 알 수 없다.
+   */
+  description?: string;
   /** AI가 입력에서 뽑은 날짜 표현 원문 ("다음주 화요일") — 서버가 이걸로 재계산 */
   dateExpr: string | null;
   startAt: string | null;   // ISO

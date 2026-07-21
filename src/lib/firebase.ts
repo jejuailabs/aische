@@ -7,6 +7,7 @@
 import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, type Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
+import { getStorage, type FirebaseStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -25,6 +26,7 @@ function getFirebaseApp(): FirebaseApp {
 // 브라우저에서만 초기화되는 lazy singleton
 let _auth: Auth | null = null;
 let _db: Firestore | null = null;
+let _storage: FirebaseStorage | null = null;
 
 export function getClientAuth(): Auth {
   if (!_auth) _auth = getAuth(getFirebaseApp());
@@ -35,6 +37,20 @@ export function getClientDb(): Firestore {
   if (!_db) _db = getFirestore(getFirebaseApp());
   return _db;
 }
+
+export function getClientStorage(): FirebaseStorage {
+  if (!_storage) _storage = getStorage(getFirebaseApp());
+  return _storage;
+}
+
+/**
+ * 이 프로젝트의 Storage 버킷 이름.
+ *
+ * 서버에서 "클라이언트가 넘긴 URL이 정말 우리 버킷 것인지" 검증할 때 쓴다.
+ * 이 검증이 없으면 임의의 URL을 넘겨 서버가 대신 요청하게 만들 수 있다(SSRF).
+ */
+export const STORAGE_BUCKET =
+  process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "";
 
 export const googleProvider = new GoogleAuthProvider();
 

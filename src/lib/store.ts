@@ -289,7 +289,13 @@ export const useNodeStore = create<NodeState>((set, get) => ({
     // 반복 일정은 회차를 저장하지 않으므로 조회 시점에 계산해서 펼친다.
     // 이 함수가 캘린더/투두/대시보드 공통 관문이라 여기 한 곳만 고치면 된다.
     return Object.values(get().nodes)
-      .filter((n) => n.schedule && occursOn(n.schedule, date))
+      // 대기함(draft)에 있는 항목은 아직 확정 전이므로 캘린더에 띄우지 않는다
+      .filter(
+        (n) =>
+          n.schedule &&
+          n.aiMeta?.status !== "draft" &&
+          occursOn(n.schedule, date)
+      )
       .map((n) => {
         if (!n.schedule?.recurrence) return n;
         // 반복 회차는 원본의 시각을 유지한 채 날짜만 그 날로 옮겨 반환한다.
