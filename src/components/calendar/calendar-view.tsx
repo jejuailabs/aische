@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import { cn } from '@/lib/utils';
 import {
   useNavStore,
@@ -68,14 +68,6 @@ const DAY_END_HOUR = 22;
 const DAY_HOURS = DAY_END_HOUR - DAY_START_HOUR;
 // 데스크톱은 14px/시간(=224px 셀)로 여유 있게, 모바일은 6px/시간(=96px 셀)로 줄여
 // 스크롤 없이 한 달이 최대한 한 화면에 들어오게 한다.
-/**
- * 스크롤 끝단에서 월을 넘기기까지 필요한 추가 휠 이동량(px).
- *
- * 0이면 끝에 닿는 순간 튄다. 사용자가 "여기가 끝이구나"를 느낄 여유를 준다.
- * 휠 한 칸이 보통 100px 안팎이므로 대략 두 번 더 굴려야 넘어간다.
- */
-const EDGE_THRESHOLD = 180;
-
 const HOUR_PX_DESKTOP = 14;
 const HOUR_PX_MOBILE = 6;
 const MIN_BAR_PX_DESKTOP = 14;
@@ -188,80 +180,88 @@ export function CalendarView() {
     });
   };
 
-  /**
-   * 달력 위에서 휠을 굴리면 월을 넘긴다.
-   *
-   * 단, **스크롤이 끝에 닿았을 때만.**
-   *
-   * 처음엔 휠이 움직이기만 하면 바로 월을 넘겼는데, 그러면 화면에 보이는
-   * 내용을 조금 내려보려고 한 칸만 굴려도 다음 달로 튀어버린다. 달력을
-   * 읽을 수가 없다.
-   *
-   * 그래서 두 단계를 둔다:
-   *   1) 이 방향으로 더 스크롤할 수 있는 조상이 있으면 → 그냥 스크롤시킨다.
-   *   2) 끝에 닿았으면 → 일정량(EDGE_THRESHOLD)만큼 더 굴려야 넘어간다.
-   *      끝에 닿는 순간 튀지 않게 하는 완충이다.
-   */
-  const wheelLockRef = useRef(0);
-  const edgeAccumRef = useRef(0);
-  const edgeAtRef = useRef(0);
+  /* ---------------- 연속 스크롤 달력 ---------------- */
+  //
+  // 휠을 가로채 월을 갈아끼우던 방식을 버렸다. 임계값을 아무리 올려도
+  // "느리게 툭 바뀌는" 것일 뿐, 한 달을 차분히 들여다볼 수가 없었다.
+  //
+  // 이제 달을 세로로 이어 붙이고 브라우저 기본 스크롤에 맡긴다.
+  // 스크롤하면서 위쪽/아래쪽에 달을 계속 채워 넣는다.
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    // 가로 스크롤이나 미세한 흔들림은 무시
-    if (Math.abs(e.deltaY) < 4 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /** 렌더할 달의 범위 (오늘 기준 오프셋) */
+  const [range, setRange] = useState({ from: -1, to: 2 });
+  /** 위로 달을 덧붙였을 때 스크롤 위치를 보정하려고 직전 높이를 기억한다 */
+  const prependRef = useRef<number | null>(null);
 
-    const down = e.deltaY > 0;
+  const monthOffsets = useMemo(() => {
+    const out: number[] = [];
+    for (let i = range.from; i <= range.to; i++) out.push(i);
+    return out;
+  }, [range]);
 
-    // 이벤트가 난 곳부터 위로 올라가며 "이 방향으로 아직 여유가 있는" 스크롤
-    // 컨테이너를 찾는다. 하나라도 있으면 월을 넘기지 않는다.
-    let el: HTMLElement | null = e.target as HTMLElement;
-    while (el) {
-      const canScrollY =
-        el.scrollHeight > el.clientHeight + 1 &&
-        /(auto|scroll)/.test(getComputedStyle(el).overflowY);
-      if (canScrollY) {
-        const room = down
-          ? el.scrollHeight - el.clientHeight - el.scrollTop > 1
-          : el.scrollTop > 1;
-        if (room) {
-          // 아직 스크롤할 곳이 남았다 — 네이티브 스크롤에 맡긴다.
-          edgeAccumRef.current = 0;
-          return;
-        }
-      }
-      el = el.parentElement;
-    }
-
-    // 문서 자체에 여유가 있는 경우도 본다.
-    const doc = document.scrollingElement as HTMLElement | null;
-    if (doc) {
-      const room = down
-        ? doc.scrollHeight - doc.clientHeight - doc.scrollTop > 1
-        : doc.scrollTop > 1;
-      if (room) {
-        edgeAccumRef.current = 0;
-        return;
-      }
-    }
-
-    // ── 여기부터는 스크롤 끝단이다 ──
-    const now = Date.now();
-
-    // 방향이 바뀌었거나 한참 쉬었으면 누적을 리셋한다.
-    if (now - edgeAtRef.current > 600 || edgeAccumRef.current * e.deltaY < 0) {
-      edgeAccumRef.current = 0;
-    }
-    edgeAtRef.current = now;
-    edgeAccumRef.current += e.deltaY;
-
-    if (Math.abs(edgeAccumRef.current) < EDGE_THRESHOLD) return;
-
-    // 관성 스크롤(트랙패드)이 한 번에 여러 달을 넘기지 않도록 쿨다운.
-    if (now - wheelLockRef.current < 400) return;
-    wheelLockRef.current = now;
-    edgeAccumRef.current = 0;
-    setMonthOffset((p) => p + (down ? 1 : -1));
+  /** 한 달치 날짜 (앞뒤 주 채움 포함) */
+  const daysForMonth = useCallback((month: Date) => {
+    const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
+    const end = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
+    return eachDayOfInterval({ start, end });
   }, []);
+
+  /**
+   * 스크롤에 따라 (1) 헤더에 보일 달을 갱신하고 (2) 범위를 넓힌다.
+   *
+   * 위로 덧붙일 때는 스크롤 위치를 보정해야 한다. 안 그러면 콘텐츠가
+   * 위로 밀리면서 화면이 갑자기 점프한다.
+   */
+  const handleMonthScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    // 컨테이너 상단에 가장 가까운 달을 '보고 있는 달'로 친다.
+    const top = el.getBoundingClientRect().top;
+    let best: number | null = null;
+    let bestDist = Infinity;
+    el.querySelectorAll<HTMLElement>('[data-month-offset]').forEach((m) => {
+      const d = Math.abs(m.getBoundingClientRect().top - top);
+      if (d < bestDist) {
+        bestDist = d;
+        best = Number(m.dataset.monthOffset);
+      }
+    });
+    if (best !== null && best !== monthOffset) setMonthOffset(best);
+
+    // 끝에 가까워지면 미리 더 만들어 둔다.
+    if (el.scrollTop < 300) {
+      prependRef.current = el.scrollHeight;
+      setRange((r) => ({ ...r, from: r.from - 2 }));
+    } else if (el.scrollHeight - el.clientHeight - el.scrollTop < 600) {
+      setRange((r) => ({ ...r, to: r.to + 2 }));
+    }
+  }, [monthOffset]);
+
+  // 위에 달이 추가된 만큼 스크롤을 내려 화면이 그대로 있게 한다.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || prependRef.current === null) return;
+    const added = el.scrollHeight - prependRef.current;
+    prependRef.current = null;
+    if (added > 0) el.scrollTop += added;
+  }, [range]);
+
+  /** 특정 오프셋의 달로 스크롤한다 (이전/다음/오늘 버튼용) */
+  const scrollToMonth = useCallback((offset: number) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const target = el.querySelector<HTMLElement>(
+      `[data-month-offset="${offset}"]`
+    );
+    if (!target) return;
+    el.scrollTo({
+      top: el.scrollTop + (target.getBoundingClientRect().top - el.getBoundingClientRect().top),
+      behavior: 'smooth',
+    });
+  }, []);
+
 
   // 모바일에서는 달력 한 칸이 너무 길어지지 않도록 시간당 픽셀을 줄인다.
   const isMobile = useIsMobile();
@@ -325,7 +325,7 @@ export function CalendarView() {
             variant="ghost"
             size="icon"
             className="size-8"
-            onClick={() => setMonthOffset((p) => p - 1)}
+            onClick={() => scrollToMonth(monthOffset - 1)}
           >
             <ChevronLeft className="size-4" />
           </Button>
@@ -336,7 +336,7 @@ export function CalendarView() {
             variant="ghost"
             size="icon"
             className="size-8"
-            onClick={() => setMonthOffset((p) => p + 1)}
+            onClick={() => scrollToMonth(monthOffset + 1)}
           >
             <ChevronRight className="size-4" />
           </Button>
@@ -346,7 +346,7 @@ export function CalendarView() {
             variant="outline"
             size="sm"
             onClick={() => {
-              setMonthOffset(0);
+              scrollToMonth(0);
               setSelectedDate(new Date());
             }}
           >
@@ -423,28 +423,55 @@ export function CalendarView() {
         </div>
       )}
 
-      {/* Calendar grid */}
-      <div
-        className="overflow-hidden rounded-lg border"
-        onWheel={handleWheel}
-      >
-        {/* Weekday headers */}
-        <div className="grid grid-cols-7 border-b bg-muted/50">
-          {weekdayLabels.map((day, i) => (
-            <div
-              key={i}
-              className="px-1 py-2 text-center text-xs font-medium text-muted-foreground"
-            >
-              {day}
-            </div>
-          ))}
-        </div>
+      {/*
+        달력 — 달을 세로로 이어 붙이고 그냥 스크롤한다.
 
-        {/* Day cells */}
-        <div className="grid grid-cols-7">
-          {calendarDays.map((day, idx) => {
-            const isCurrentMonth =
-              day.getMonth() === currentMonth.getMonth();
+        예전엔 휠을 가로채서 월을 툭 갈아끼웠다. 한 칸만 굴려도 다음 달로
+        튀어서 한 달을 제대로 볼 수가 없었다. 임계값을 올려봐야 "느리게 툭"이
+        될 뿐 근본이 같다.
+
+        그래서 휠 가로채기를 없앴다. 달과 달 사이를 넉넉히 띄우고, 월 이름을
+        상단에 붙여둔다(sticky). 지금 보고 있는 달이 뭔지는 늘 보이고,
+        스크롤 속도는 브라우저 기본값이라 손에 익은 대로 움직인다.
+      */}
+      <div
+        ref={scrollRef}
+        onScroll={handleMonthScroll}
+        className="overflow-y-auto rounded-lg border max-h-[calc(100dvh-200px)]"
+      >
+        {monthOffsets.map((offset) => {
+          const month = addMonths(new Date(), offset);
+          const days = daysForMonth(month);
+          // mb-8 = 달 사이 여백. 스크롤하면서 경계가 눈에 보여야 한다.
+          return (
+            <div
+              key={offset}
+              data-month-offset={offset}
+              className="mb-8 last:mb-0"
+            >
+              {/* 월 이름 — 스크롤해도 위에 붙어 있다 */}
+              <div className="sticky top-0 z-10 border-b bg-card/95 px-3 py-2 backdrop-blur">
+                <span className="text-sm font-semibold">
+                  {format(month, 'yyyy년 M월', { locale: dateLocale })}
+                </span>
+              </div>
+
+              {/* Weekday headers */}
+              <div className="grid grid-cols-7 border-b bg-muted/50">
+                {weekdayLabels.map((day, i) => (
+                  <div
+                    key={i}
+                    className="px-1 py-2 text-center text-xs font-medium text-muted-foreground"
+                  >
+                    {day}
+                  </div>
+                ))}
+              </div>
+
+              {/* Day cells */}
+              <div className="grid grid-cols-7">
+          {days.map((day, idx) => {
+            const isCurrentMonth = day.getMonth() === month.getMonth();
             const isToday = isSameDay(day, new Date());
             const events = isFixedCostMode ? [] : getEventsForDay(day);
             const { placed, laneCount } = assignLanes(events);
@@ -556,7 +583,10 @@ export function CalendarView() {
               </button>
             );
           })}
-        </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <NodeDetailSheet
