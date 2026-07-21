@@ -950,7 +950,18 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               summary: renderAgenda(agenda),
             }),
           });
-          if (!r.ok) throw new Error('agent API error');
+          if (!r.ok) {
+            // 서버가 준 이유를 그대로 올린다. "agent API error"만 던지면
+            // 화면에도 콘솔에도 원인이 안 남아서 고칠 수가 없다.
+            let why = `HTTP ${r.status}`;
+            try {
+              const body = await r.json();
+              if (body?.error) why = `${why}: ${body.error}`;
+            } catch {
+              /* 본문이 JSON이 아니면 상태 코드만 */
+            }
+            throw new Error(why);
+          }
           return r.json();
         },
         // 도구 결과 포맷은 프로바이더마다 다르다. 서버가 알려준 형식을 쓴다.
@@ -966,6 +977,17 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
             ),
         },
       );
+
+      // 무엇이 일어났는지 콘솔에 남긴다. 화면에 "..."만 뜨고 끝나면
+      // 어디서 멈췄는지 알 수가 없다.
+      console.info('[agent]', {
+        steps: agentOut.steps.map((s) => s.tool),
+        pending: agentOut.pending?.kind ?? null,
+        staged: agentOut.staged,
+        conflicts: agentOut.conflicts.length,
+        truncated: agentOut.truncated,
+        text: agentOut.text.slice(0, 120),
+      });
 
       // 확인이 필요한 변경(수정·삭제) → 확인 카드
       if (agentOut.pending) {
@@ -993,7 +1015,15 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
               ? {
                   id: thinkId,
                   role: 'ai' as const,
-                  content: agentOut.text || '...',
+                  // 답이 비는 건 정상이 아니다. "..."로 때우면 사용자는
+                  // 멈춘 건지 끝난 건지 알 수 없다. 무슨 일이 있었는지 밝힌다.
+                  content:
+                    agentOut.text ||
+                    (agentOut.steps.length
+                      ? `확인은 했는데 답변을 만들지 못했습니다. ` +
+                        `(실행: ${agentOut.steps.map((s) => s.tool).join(' → ')})\n` +
+                        `다시 한 번 말씀해 주시겠어요?`
+                      : '답변을 받지 못했습니다. 다시 시도해 주세요.'),
                   conflicts: agentOut.conflicts.length
                     ? agentOut.conflicts
                     : undefined,
@@ -1095,18 +1125,21 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
         );
       }
     } catch (err) {
-      console.warn('[AI] 실패, 로컬 파서로 폴백:', err);
-      const result = parseUserInput(text, language);
-      const draft = createDraftNode(result, 'demo-workspace');
-      addNode(draft);
+      // 예전엔 여기서 조용히 로컬 파서로 폴백해 초안을 만들었다.
+      // 그러면 사용자는 **왜 이상한 게 생겼는지 모른 채** 엉뚱한 초안을 받는다.
+      // 실패는 실패라고 보여주는 게 맞다. 원인 없이 "..."만 뜨면 고칠 수도 없다.
+      console.error('[AI] 에이전트 실패:', err);
+      const detail =
+        err instanceof Error ? err.message : String(err ?? 'unknown');
       setMessages((prev) =>
         prev.map((m) =>
           m.id === thinkId
             ? {
                 id: thinkId,
-                role: 'draft' as const,
-                content: t.chat.parsedSummary,
-                draftNodeId: draft.id,
+                role: 'ai' as const,
+                content:
+                  `처리 중 오류가 생겼습니다.\n${detail}\n\n` +
+                  `잠시 후 다시 시도해 주세요. 계속되면 이 메시지를 알려주세요.`,
               }
             : m,
         ),
@@ -1122,6 +1155,13 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
     addNode,
     updateNode,
     nodes,
+    // 에이전트가 조회하는 데이터 — 빠져 있으면 오래된 값으로 검색해서
+    // "그런 일정 없습니다"가 나온다.
+    people,
+    orgs,
+    topics,
+    captures,
+    messages,
     projects,
     categories,
     clarificationState,

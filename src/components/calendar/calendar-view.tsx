@@ -68,6 +68,14 @@ const DAY_END_HOUR = 22;
 const DAY_HOURS = DAY_END_HOUR - DAY_START_HOUR;
 // 데스크톱은 14px/시간(=224px 셀)로 여유 있게, 모바일은 6px/시간(=96px 셀)로 줄여
 // 스크롤 없이 한 달이 최대한 한 화면에 들어오게 한다.
+/**
+ * 스크롤 끝단에서 월을 넘기기까지 필요한 추가 휠 이동량(px).
+ *
+ * 0이면 끝에 닿는 순간 튄다. 사용자가 "여기가 끝이구나"를 느낄 여유를 준다.
+ * 휠 한 칸이 보통 100px 안팎이므로 대략 두 번 더 굴려야 넘어간다.
+ */
+const EDGE_THRESHOLD = 180;
+
 const HOUR_PX_DESKTOP = 14;
 const HOUR_PX_MOBILE = 6;
 const MIN_BAR_PX_DESKTOP = 14;
@@ -182,16 +190,77 @@ export function CalendarView() {
 
   /**
    * 달력 위에서 휠을 굴리면 월을 넘긴다.
-   * 관성 스크롤(트랙패드)이 한 번에 여러 달을 넘기지 않도록 쿨다운을 둔다.
+   *
+   * 단, **스크롤이 끝에 닿았을 때만.**
+   *
+   * 처음엔 휠이 움직이기만 하면 바로 월을 넘겼는데, 그러면 화면에 보이는
+   * 내용을 조금 내려보려고 한 칸만 굴려도 다음 달로 튀어버린다. 달력을
+   * 읽을 수가 없다.
+   *
+   * 그래서 두 단계를 둔다:
+   *   1) 이 방향으로 더 스크롤할 수 있는 조상이 있으면 → 그냥 스크롤시킨다.
+   *   2) 끝에 닿았으면 → 일정량(EDGE_THRESHOLD)만큼 더 굴려야 넘어간다.
+   *      끝에 닿는 순간 튀지 않게 하는 완충이다.
    */
   const wheelLockRef = useRef(0);
+  const edgeAccumRef = useRef(0);
+  const edgeAtRef = useRef(0);
+
   const handleWheel = useCallback((e: React.WheelEvent) => {
     // 가로 스크롤이나 미세한 흔들림은 무시
-    if (Math.abs(e.deltaY) < 20 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    if (Math.abs(e.deltaY) < 4 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+
+    const down = e.deltaY > 0;
+
+    // 이벤트가 난 곳부터 위로 올라가며 "이 방향으로 아직 여유가 있는" 스크롤
+    // 컨테이너를 찾는다. 하나라도 있으면 월을 넘기지 않는다.
+    let el: HTMLElement | null = e.target as HTMLElement;
+    while (el) {
+      const canScrollY =
+        el.scrollHeight > el.clientHeight + 1 &&
+        /(auto|scroll)/.test(getComputedStyle(el).overflowY);
+      if (canScrollY) {
+        const room = down
+          ? el.scrollHeight - el.clientHeight - el.scrollTop > 1
+          : el.scrollTop > 1;
+        if (room) {
+          // 아직 스크롤할 곳이 남았다 — 네이티브 스크롤에 맡긴다.
+          edgeAccumRef.current = 0;
+          return;
+        }
+      }
+      el = el.parentElement;
+    }
+
+    // 문서 자체에 여유가 있는 경우도 본다.
+    const doc = document.scrollingElement as HTMLElement | null;
+    if (doc) {
+      const room = down
+        ? doc.scrollHeight - doc.clientHeight - doc.scrollTop > 1
+        : doc.scrollTop > 1;
+      if (room) {
+        edgeAccumRef.current = 0;
+        return;
+      }
+    }
+
+    // ── 여기부터는 스크롤 끝단이다 ──
     const now = Date.now();
-    if (now - wheelLockRef.current < 320) return;
+
+    // 방향이 바뀌었거나 한참 쉬었으면 누적을 리셋한다.
+    if (now - edgeAtRef.current > 600 || edgeAccumRef.current * e.deltaY < 0) {
+      edgeAccumRef.current = 0;
+    }
+    edgeAtRef.current = now;
+    edgeAccumRef.current += e.deltaY;
+
+    if (Math.abs(edgeAccumRef.current) < EDGE_THRESHOLD) return;
+
+    // 관성 스크롤(트랙패드)이 한 번에 여러 달을 넘기지 않도록 쿨다운.
+    if (now - wheelLockRef.current < 400) return;
     wheelLockRef.current = now;
-    setMonthOffset((p) => p + (e.deltaY > 0 ? 1 : -1));
+    edgeAccumRef.current = 0;
+    setMonthOffset((p) => p + (down ? 1 : -1));
   }, []);
 
   // 모바일에서는 달력 한 칸이 너무 길어지지 않도록 시간당 픽셀을 줄인다.
