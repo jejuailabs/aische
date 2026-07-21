@@ -245,36 +245,30 @@ export function CalendarView() {
       </div>
       )}
 
-      {/*
-        Month navigation
-
-        flex-wrap이 없으면 좁은 화면에서 오른쪽 끝(모드 토글)이 잘린다.
-        min-w-[120px]도 고정폭이라 줄어들 여지를 막고 있었다.
-        좁아지면 두 줄로 내려가게 둔다.
-      */}
-      <div className="flex flex-wrap items-center justify-between gap-y-2">
-        <div className="flex min-w-0 items-center gap-2">
+      {/* Month navigation */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 shrink-0"
+            className="size-8"
             onClick={() => goMonth(-1)}
           >
             <ChevronLeft className="size-4" />
           </Button>
-          <h2 className="min-w-0 shrink text-center text-sm font-semibold whitespace-nowrap sm:min-w-[120px]">
+          <h2 className="min-w-[120px] text-center text-sm font-semibold">
             {format(currentMonth, 'yyyy년 M월', { locale: dateLocale })}
           </h2>
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 shrink-0"
+            className="size-8"
             onClick={() => goMonth(1)}
           >
             <ChevronRight className="size-4" />
           </Button>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
