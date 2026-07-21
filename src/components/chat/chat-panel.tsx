@@ -2078,64 +2078,85 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   }
 
   /* ================================================================ */
-  /*  변형 2: 하단 시트 (모바일)                                        */
+  /*  변형 2: 플로팅 버튼 + 전체 모달 (모바일)                          */
   /* ================================================================ */
   //
-  // 메시지 영역이 레이아웃을 밀어내면 캘린더가 눌리므로, 시트는 본문 위로
-  // 겹쳐서(overlay) 올라온다. 입력 바만 항상 자리를 차지한다.
+  // 예전엔 입력 바가 화면 하단에 항상 붙어 있었다. 문제가 두 가지였다:
+  //   - 키보드가 올라오면 바가 밀려 올라가면서 레이아웃이 깨졌다
+  //   - 대화 내용이 본문 위로 겹쳐 올라와 캘린더를 가렸다
+  //
+  // 그래서 데스크톱과 같은 방식으로 통일한다. 평소에는 우측 하단 동그란
+  // 버튼 하나만 떠 있고, 누르면 대화와 입력이 함께 있는 모달이 열린다.
+  // 키보드가 올라와도 모달 안에서 처리되므로 본문이 흔들리지 않는다.
 
   return (
     <>
-      {/* 펼쳐졌을 때 뒤 배경 — 탭하면 닫힘 */}
+      {/* 플로팅 버튼 — 닫혀 있을 때만 */}
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          aria-label={t.chat.title}
+          className="fixed bottom-20 right-4 z-40 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg active:scale-95"
+        >
+          <MessageCircle className="size-6" />
+          {/* 대기함에 쌓인 게 있으면 뱃지로 알린다 */}
+          {draftCount > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 flex size-5 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-destructive-foreground">
+              {draftCount}
+            </span>
+          )}
+        </button>
+      )}
+
+      {/* 모달 */}
       <AnimatePresence>
-        {open && hasMessages && (
+        {open && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            data-testid="chat-backdrop"
-            className="fixed inset-0 z-30 bg-black/20"
+            className="fixed inset-0 z-50 bg-black/40"
             onClick={() => setOpen(false)}
-          />
-        )}
-      </AnimatePresence>
-
-      <div className="relative z-40 flex flex-col">
-        {/* 메시지 시트 — 입력 바 위로 겹쳐 올라온다 */}
-        <AnimatePresence>
-          {open && hasMessages && (
+          >
             <motion.div
-              initial={{ y: 12, opacity: 0 }}
+              initial={{ y: 24, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 12, opacity: 0 }}
-              transition={{ duration: 0.18, ease: 'easeOut' }}
+              exit={{ y: 24, opacity: 0 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
               data-testid="chat-sheet"
-              className="absolute bottom-full inset-x-0 flex max-h-[55vh] flex-col overflow-hidden rounded-t-2xl border-x border-t bg-card shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+              /*
+                inset-x-2 + bottom-2: 화면에 꽉 채우지 않고 살짝 띄운다.
+                top-16: 위쪽은 남겨서 뒤에 뭐가 있는지 보이게 한다.
+                키보드가 올라오면 dvh가 줄어들어 모달이 알아서 짧아진다.
+              */
+              className="absolute inset-x-2 bottom-2 top-16 flex flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl"
             >
-              <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
+              <div className="flex shrink-0 items-center justify-between border-b px-4 py-2.5">
                 <div className="flex items-center gap-2">
-                  <MessageCircle className="size-3.5 text-primary" />
-                  <span className="text-xs font-semibold">{t.chat.title}</span>
+                  <MessageCircle className="size-4 text-primary" />
+                  <span className="text-sm font-semibold">{t.chat.title}</span>
                 </div>
                 <button
                   onClick={() => setOpen(false)}
                   aria-label="닫기"
-                  className="flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className="flex size-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
                 >
                   <X className="size-4" />
                 </button>
               </div>
+
               <ScrollArea className="min-h-0 flex-1 px-4 py-3">
                 {messageList}
               </ScrollArea>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
-        {attachedChip}
-        {inputBar}
-      </div>
+              {attachedChip}
+              {inputBar}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }

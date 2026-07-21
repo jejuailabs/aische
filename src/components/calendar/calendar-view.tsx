@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import {
   useNavStore,
@@ -180,120 +180,17 @@ export function CalendarView() {
     });
   };
 
-  /* ---------------- 연속 스크롤 달력 ---------------- */
-  //
-  // 휠을 가로채 월을 갈아끼우던 방식을 버렸다. 임계값을 아무리 올려도
-  // "느리게 툭 바뀌는" 것일 뿐, 한 달을 차분히 들여다볼 수가 없었다.
-  //
-  // 이제 달을 세로로 이어 붙이고 브라우저 기본 스크롤에 맡긴다.
-  // 스크롤하면서 위쪽/아래쪽에 달을 계속 채워 넣는다.
-
-  const scrollRef = useRef<HTMLDivElement>(null);
-  /** 렌더할 달의 범위 (오늘 기준 오프셋) */
-  const [range, setRange] = useState({ from: -1, to: 2 });
-  /** 위로 달을 덧붙였을 때 스크롤 위치를 보정하려고 직전 높이를 기억한다 */
-  const prependRef = useRef<number | null>(null);
   /**
-   * 첫 진입에서 이번 달로 자리를 잡았는지.
+   * 달 이동.
    *
-   * 이게 없으면 마운트 직후 scrollTop이 0이라 "위를 더 채워라"가 바로 발동하고,
-   * 채우면 또 위가 되고… 과거로 계속 걸어간다. 실제로 열자마자 25년 12월이
-   * 떠 있었다. 자리를 잡기 전까지는 스크롤 핸들러를 아예 돌리지 않는다.
+   * 한때 달을 세로로 이어 붙여 연속 스크롤로 만들었는데, 스크롤 위치를
+   * 다루는 것 자체가 계속 사고를 냈다 (열자마자 과거로 밀리는 등).
+   * 화살표로 한 달씩 넘기는 편이 예측 가능하다. 화살표는 위아래 양쪽에 둔다 —
+   * 달력을 다 본 뒤 다시 위로 올라가야 넘길 수 있으면 불편하다.
    */
-  const readyRef = useRef(false);
-
-  const monthOffsets = useMemo(() => {
-    const out: number[] = [];
-    for (let i = range.from; i <= range.to; i++) out.push(i);
-    return out;
-  }, [range]);
-
-  /** 한 달치 날짜 (앞뒤 주 채움 포함) */
-  const daysForMonth = useCallback((month: Date) => {
-    const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
-    const end = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
-    return eachDayOfInterval({ start, end });
+  const goMonth = useCallback((delta: number) => {
+    setMonthOffset((p) => p + delta);
   }, []);
-
-  /**
-   * 스크롤에 따라 (1) 헤더에 보일 달을 갱신하고 (2) 범위를 넓힌다.
-   *
-   * 위로 덧붙일 때는 스크롤 위치를 보정해야 한다. 안 그러면 콘텐츠가
-   * 위로 밀리면서 화면이 갑자기 점프한다.
-   */
-  const handleMonthScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // 이번 달로 자리를 잡기 전에는 아무것도 하지 않는다.
-    // 안 그러면 마운트 직후 scrollTop=0 때문에 과거로 무한히 채워 나간다.
-    if (!readyRef.current) return;
-
-    // 컨테이너 상단에 가장 가까운 달을 '보고 있는 달'로 친다.
-    const top = el.getBoundingClientRect().top;
-    let best: number | null = null;
-    let bestDist = Infinity;
-    el.querySelectorAll<HTMLElement>('[data-month-offset]').forEach((m) => {
-      const d = Math.abs(m.getBoundingClientRect().top - top);
-      if (d < bestDist) {
-        bestDist = d;
-        best = Number(m.dataset.monthOffset);
-      }
-    });
-    if (best !== null && best !== monthOffset) setMonthOffset(best);
-
-    // 끝에 가까워지면 미리 더 만들어 둔다.
-    //
-    // prependRef가 아직 살아 있으면 직전 요청의 보정이 안 끝난 것이다.
-    // 그 상태에서 또 요청하면 보정 전 scrollTop(=작은 값)을 보고 계속
-    // 과거로 걸어간다.
-    if (el.scrollTop < 300 && prependRef.current === null) {
-      prependRef.current = el.scrollHeight;
-      setRange((r) => ({ ...r, from: r.from - 2 }));
-    } else if (el.scrollHeight - el.clientHeight - el.scrollTop < 600) {
-      setRange((r) => ({ ...r, to: r.to + 2 }));
-    }
-  }, [monthOffset]);
-
-  // 위에 달이 추가된 만큼 스크롤을 내려 화면이 그대로 있게 한다.
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el || prependRef.current === null) return;
-    const added = el.scrollHeight - prependRef.current;
-    prependRef.current = null;
-    if (added > 0) el.scrollTop += added;
-  }, [range]);
-
-  /**
-   * 첫 진입 — **이번 달**로 자리를 잡는다.
-   *
-   * 달을 앞뒤로 붙여 놓았으므로 그냥 두면 맨 위(지난달)가 보인다.
-   * 달력을 열면 당연히 이번 달이 보여야 한다.
-   */
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el || readyRef.current) return;
-    const thisMonth = el.querySelector<HTMLElement>('[data-month-offset="0"]');
-    if (!thisMonth) return;
-    el.scrollTop =
-      thisMonth.getBoundingClientRect().top - el.getBoundingClientRect().top;
-    // 자리를 잡은 다음부터 스크롤 핸들러를 연다.
-    readyRef.current = true;
-  }, [calendarSubView, mode]);
-
-  /** 특정 오프셋의 달로 스크롤한다 (이전/다음/오늘 버튼용) */
-  const scrollToMonth = useCallback((offset: number) => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const target = el.querySelector<HTMLElement>(
-      `[data-month-offset="${offset}"]`
-    );
-    if (!target) return;
-    el.scrollTo({
-      top: el.scrollTop + (target.getBoundingClientRect().top - el.getBoundingClientRect().top),
-      behavior: 'smooth',
-    });
-  }, []);
-
 
   // 모바일에서는 달력 한 칸이 너무 길어지지 않도록 시간당 픽셀을 줄인다.
   const isMobile = useIsMobile();
@@ -301,8 +198,6 @@ export function CalendarView() {
   const minBarPx = isMobile ? MIN_BAR_PX_MOBILE : MIN_BAR_PX_DESKTOP;
   const timelinePx = DAY_HOURS * hourPx;
 
-  // Event bar geometry in px, so a bar's size tracks its real duration
-  // instead of collapsing with the cell.
   const eventBarStyle = (node: Node, lane: number, laneCount: number) => {
     if (!node.schedule) return {};
     const rawStart = node.schedule.startAt.getHours() + node.schedule.startAt.getMinutes() / 60;
@@ -363,7 +258,7 @@ export function CalendarView() {
             variant="ghost"
             size="icon"
             className="size-8 shrink-0"
-            onClick={() => scrollToMonth(monthOffset - 1)}
+            onClick={() => goMonth(-1)}
           >
             <ChevronLeft className="size-4" />
           </Button>
@@ -374,7 +269,7 @@ export function CalendarView() {
             variant="ghost"
             size="icon"
             className="size-8 shrink-0"
-            onClick={() => scrollToMonth(monthOffset + 1)}
+            onClick={() => goMonth(1)}
           >
             <ChevronRight className="size-4" />
           </Button>
@@ -384,7 +279,7 @@ export function CalendarView() {
             variant="outline"
             size="sm"
             onClick={() => {
-              scrollToMonth(0);
+              setMonthOffset(0);
               setSelectedDate(new Date());
             }}
           >
@@ -461,55 +356,25 @@ export function CalendarView() {
         </div>
       )}
 
-      {/*
-        달력 — 달을 세로로 이어 붙이고 그냥 스크롤한다.
-
-        예전엔 휠을 가로채서 월을 툭 갈아끼웠다. 한 칸만 굴려도 다음 달로
-        튀어서 한 달을 제대로 볼 수가 없었다. 임계값을 올려봐야 "느리게 툭"이
-        될 뿐 근본이 같다.
-
-        그래서 휠 가로채기를 없앴다. 달과 달 사이를 넉넉히 띄우고, 월 이름을
-        상단에 붙여둔다(sticky). 지금 보고 있는 달이 뭔지는 늘 보이고,
-        스크롤 속도는 브라우저 기본값이라 손에 익은 대로 움직인다.
-      */}
-      <div
-        ref={scrollRef}
-        onScroll={handleMonthScroll}
-        className="overflow-y-auto rounded-lg border max-h-[calc(100dvh-200px)]"
-      >
-        {monthOffsets.map((offset) => {
-          const month = addMonths(new Date(), offset);
-          const days = daysForMonth(month);
-          // mb-8 = 달 사이 여백. 스크롤하면서 경계가 눈에 보여야 한다.
-          return (
+      {/* Calendar grid — 한 달만 그린다 */}
+      <div className="overflow-hidden rounded-lg border">
+        {/* Weekday headers */}
+        <div className="grid grid-cols-7 border-b bg-muted/50">
+          {weekdayLabels.map((day, i) => (
             <div
-              key={offset}
-              data-month-offset={offset}
-              className="mb-8 last:mb-0"
+              key={i}
+              className="px-1 py-2 text-center text-xs font-medium text-muted-foreground"
             >
-              {/* 월 이름 — 스크롤해도 위에 붙어 있다 */}
-              <div className="sticky top-0 z-10 border-b bg-card/95 px-3 py-2 backdrop-blur">
-                <span className="text-sm font-semibold">
-                  {format(month, 'yyyy년 M월', { locale: dateLocale })}
-                </span>
-              </div>
+              {day}
+            </div>
+          ))}
+        </div>
 
-              {/* Weekday headers */}
-              <div className="grid grid-cols-7 border-b bg-muted/50">
-                {weekdayLabels.map((day, i) => (
-                  <div
-                    key={i}
-                    className="px-1 py-2 text-center text-xs font-medium text-muted-foreground"
-                  >
-                    {day}
-                  </div>
-                ))}
-              </div>
-
-              {/* Day cells */}
-              <div className="grid grid-cols-7">
-          {days.map((day, idx) => {
-            const isCurrentMonth = day.getMonth() === month.getMonth();
+        {/* Day cells */}
+        <div className="grid grid-cols-7">
+          {calendarDays.map((day, idx) => {
+            const isCurrentMonth =
+              day.getMonth() === currentMonth.getMonth();
             const isToday = isSameDay(day, new Date());
             const events = isFixedCostMode ? [] : getEventsForDay(day);
             const { placed, laneCount } = assignLanes(events);
@@ -621,10 +486,45 @@ export function CalendarView() {
               </button>
             );
           })}
-              </div>
-            </div>
-          );
-        })}
+        </div>
+      </div>
+
+      {/*
+        하단 달 이동.
+
+        위에도 화살표가 있지만, 달력을 다 훑고 나서 다시 위로 올라가야만
+        넘길 수 있으면 불편하다. 아래에서도 바로 넘길 수 있게 둔다.
+      */}
+      <div className="flex items-center justify-center gap-3">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1 px-3 text-xs"
+          onClick={() => goMonth(-1)}
+        >
+          <ChevronLeft className="size-4" />
+          {format(addMonths(currentMonth, -1), 'M월', { locale: dateLocale })}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 px-3 text-xs"
+          onClick={() => {
+            setMonthOffset(0);
+            setSelectedDate(new Date());
+          }}
+        >
+          {t.calendar.today}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1 px-3 text-xs"
+          onClick={() => goMonth(1)}
+        >
+          {format(addMonths(currentMonth, 1), 'M월', { locale: dateLocale })}
+          <ChevronRight className="size-4" />
+        </Button>
       </div>
 
       <NodeDetailSheet
