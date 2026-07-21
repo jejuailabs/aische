@@ -1849,13 +1849,14 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
   ) : null;
 
   const inputBar = (
+    // px-2 / gap-1.5 — 좁은 화면에서 입력창이 꽉 차 보이지 않게 여백을 줄였다.
     <div
       className={cn(
-        'shrink-0 border-t bg-card px-3 py-2',
+        'shrink-0 border-t bg-card px-2 py-2',
         !isFloating && 'pb-[max(0.5rem,env(safe-area-inset-bottom))]',
       )}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         <input
           ref={fileInputRef}
           type="file"
@@ -1882,16 +1883,13 @@ export function ChatPanel({ variant = 'docked' }: ChatPanelProps) {
           가운데 떠 있으면 어색하다. 마지막 줄에 맞춘다.
         */}
         {/*
-          min-w-0 이 없으면 오른쪽 전송 버튼이 화면 밖으로 밀린다.
-
-          flex 자식의 min-width 기본값은 auto라서, 내부 요소의 **고유 최소 너비**
-          아래로는 줄어들지 않는다. textarea는 기본 cols=20이라 그 최소폭이
-          꽤 넓다. (input에서 textarea로 바꾸면서 생긴 회귀다.)
-          min-w-0을 줘야 남는 공간에 맞춰 줄어든다.
+          min-w-0: flex 자식의 min-width 기본값은 auto라서 내부 요소의 고유
+          최소 너비 아래로 안 줄어든다. textarea는 기본 cols=20이라 그 값이
+          꽤 크다. 이게 없으면 아주 좁은 화면에서 전송 버튼이 밖으로 밀린다.
         */}
         <div
           className={cn(
-            'flex min-w-0 flex-1 items-end gap-1 border bg-background px-3 py-1.5',
+            'flex min-w-0 flex-1 items-end gap-1 border bg-background px-2.5 py-1.5',
             isMultiline ? 'rounded-2xl' : 'rounded-full'
           )}
         >

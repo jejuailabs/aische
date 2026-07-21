@@ -45,7 +45,9 @@ declare global {
 /* ------------------------------------------------------------------ */
 
 const CANVAS_SIZE = 120; // px – visualizer canvas diameter
-const BUTTON_SIZE = 40; // px – mic button diameter
+// 34px. 40px일 때는 좁은 화면에서 입력 바가 꽉 차 보였다.
+// 첨부(32px)와 전송(32px) 사이에서 혼자 튀지 않을 정도만 크게 둔다.
+const BUTTON_SIZE = 34; // px – mic button diameter
 const BASE_RADIUS = 28; // px – base radius of the waveform ring
 const MAX_AMPLITUDE = 18; // px – max outward extension of waveform
 const FFT_SIZE = 256;
